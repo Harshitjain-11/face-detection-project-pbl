@@ -1,0 +1,36 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Live Face Detection</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+   <div id="particles-js"></div>
+  <div class="container">
+    <h1>Live Face Detection</h1>
+    <a href="/" style="float:right;margin-bottom:10px;">Back to Home</a>
+    <div style="margin: 30px 0;">
+      <img id="videoFeed" src="/video_feed" alt="Live Detection" width="400" style="border-radius:12px;border:2px solid #444;" />
+    </div>
+    <div>
+      <button onclick="stopStream()">Stop Detection</button>
+      <button onclick="startStream()">Start Detection</button>
+    </div>
+    <div id="info" style="margin-top:20px;color:#aaa;"></div>
+  </div>
+  <script>
+    const videoFeed = document.getElementById('videoFeed');
+    function stopStream() {
+      videoFeed.src = '';
+      document.getElementById('info').textContent = "Detection stopped.";
+      fetch('/shutdown', {method: 'POST'});
+    }
+    function startStream() {
+      videoFeed.src = '/video_feed';
+      document.getElementById('info').textContent = "Detection running...";
+    }
+  </script>
+</body>
+</html>

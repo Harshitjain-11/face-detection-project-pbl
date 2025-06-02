@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Face Gallery</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+  <script src="https://cdn.jsdelivr.net/npm/particles.js@2.0.0/particles.min.js"></script>
+</head>
+<body>
+  <div id="particles-js"></div>
+  <div class="container">
+    <h1 style="margin-top:40px;">Gallery</h1>
+    <a href="/" class="back-btn">← Back to Home</a>
+    <div class="gallery-tree" id="galleryTree">
+      {% for person in people %}
+        {% set person_idx = loop.index %}
+        <div class="person-block" data-person="{{ person_idx }}">
+          <h2>{{ person.name }}</h2>
+          <div class="images">
+            {% for img in person.images %}
+              <img src="{{ img }}" class="gallery-img" id="img-{{ person_idx }}-{{ loop.index }}">
+            {% endfor %}
+            <svg class="svg-lines"></svg>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+  <script>
+    // Particles.js config
+    particlesJS("particles-js", {
+      "particles": {
+        "number": { "value": 60, "density": { "enable": true, "value_area": 800 } },
+        "color": { "value": "#00c6ff" },
+        "shape": { "type": "circle" },
+        "opacity": { "value": 0.3, "random": true },
+        "size": { "value": 4, "random": true },
+        "line_linked": { "enable": true, "distance": 150, "color": "#00c6ff", "opacity": 0.2, "width": 1 },
+        "move": { "enable": true, "speed": 2 }
+      },
+      "interactivity": {
+        "detect_on": "canvas",
+        "events": { "onhover": { "enable": true, "mode": "repulse" } }
+      },
+      "retina_detect": true
+    });
+  </script>
+</body>
+</html>
