@@ -1,6 +1,4 @@
-
-</html> -->
-<!DOCTYPE html>
+<!-- <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -14,12 +12,13 @@
   <div class="container">
     <h1>Face Detection WebApp</h1>
         <div class="subtitle">AI/ML Powered | Fast & Secure</div>
+<h2 class="typewriter">Welcome to Smart Face Detection</h2>
 
     <div>
       <button id="startBtn">Start Webcam</button>
       <button id="stopBtn" style="display:none;">Stop Webcam</button>
     </div>
-    <div id="videoBox" style="display:none;">
+    <div id="videoBox">
       <img id="videoFeed" src="" />
     </div>
     <form id="captureForm">
@@ -28,11 +27,9 @@
     </form>
     <button id="trainBtn">Train Model</button>
     <button onclick="window.location='/gallery'">Gallery</button>
+    <button id="autoCaptureBtn" type="button">Auto Capture 10 Images</button>
     <div id="msg"></div>
   </div>
-  <footer class="footer" style="text-align:center; margin-top: 2rem; color: hsl(0, 33%, 95%); font-size: 1rem;">
-   <strong> Made by ~ Harshit Jain</strong> 
-  </footer>
   <script src="https://cdn.jsdelivr.net/npm/particles.js@2.0.0/particles.min.js"></script>
   <script src="/static/js/main.js"></script>
   <script>
@@ -65,12 +62,43 @@
     });
   </script>
 </body>
-</html>
-  <!-- Add particles.js library from CDN -->
+</html> -->
+<!-- templates/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Face Detection App</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+   <link href="https://fonts.googleapis.com/css2?family=Exo:wght@700;900&family=Rajdhani:wght@700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Exo:wght@700;900&family=Rajdhani:wght@700&display=swap" rel="stylesheet">
+</head>
+<body>
+   <div id="particles-js"></div>
+  <div class="container">
+    <h1>Face Detection WebApp</h1>
+     <!-- <div class="subtitle">AI/ML Powered | Fast & Secure</div>
+    <h2 class="typewriter">Welcome to Smart Face Detection</h2> -->
+    <div>
+      <button id="startBtn">Start Webcam</button>
+      <button id="stopBtn" style="display:none;">Stop Webcam</button>
+      <!-- <button id="flipBtn" type="button">Toggle Flip</button> -->
+    </div>
+    <div id="videoBox" style="display:none; margin-top:20px;">
+      <img id="videoFeed" src="" style="max-width:360px; border-radius:12px; border:3px solid #00fff0;" />
+    </div>
+    <form id="captureForm">
+      <input type="text" id="name" placeholder="Enter your name" required>
+      <button type="submit">Capture</button>
+    </form>
+    <button id="trainBtn">Train Model</button>
+    <button onclick="window.location='/gallery'">Gallery</button>
+    <button id="autoCaptureBtn" type="button">Auto Capture 10 Images</button>
+    <div id="msg" style="margin-top:12px;color:#8df;"></div>
+  </div>
   <script src="https://cdn.jsdelivr.net/npm/particles.js@2.0.0/particles.min.js"></script>
   <script src="/static/js/main.js"></script>
-  <script>
-    particlesJS("particles-js", {
+  <script>particlesJS("particles-js", {
       particles: {
         number: { value: 80 },
         shape: { type: "circle" },
@@ -96,7 +124,6 @@
         }
       },
       retina_detect: true,
-    });
-  </script>
+    });</script>
 </body>
 </html>

@@ -1,171 +1,283 @@
-from flask import Flask, render_template, request, redirect, url_for, Response, jsonify
+
+from flask import Flask, render_template, request, Response, jsonify
 import os
-import cv2
-from PIL import Image
-import numpy as np
-import pickle
+import time
 import uuid
 import base64
+import pickle
+import re
+import math
+import cv2
+import numpy as np
 
 app = Flask(__name__)
+
+# ================== CONFIG ==================
 UPLOAD_FOLDER = 'static/uploads'
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-camera = cv2.VideoCapture(0)
-face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+CASCADE_PATH = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+face_cascade = cv2.CascadeClassifier(CASCADE_PATH)
+if face_cascade.empty():
+    raise IOError("Haarcascade not loaded")
 
+camera = None
 recognizer = None
 labels = {}
 
+STOP_STREAM = False
+
+# Tunables
+FACE_SIZE = (200, 200)
+TRAIN_MIN_IMAGES = 2
+
+
+# ================== LOAD MODEL ==================
 def load_model():
     global recognizer, labels
-    recognizer = cv2.face.LBPHFaceRecognizer_create()
-    if os.path.exists("recognizer.yml"):
-        recognizer.read("recognizer.yml")
-    if os.path.exists("labels.pickle"):
-        with open("labels.pickle", 'rb') as f:
-            raw = pickle.load(f)
-            labels.clear()
-            labels.update({v: k for k, v in raw.items()})
+    labels.clear()
 
-# Initial load
+    if os.path.exists("recognizer.yml") and os.path.exists("labels.pickle"):
+        recognizer = cv2.face.LBPHFaceRecognizer_create()
+        recognizer.read("recognizer.yml")
+        with open("labels.pickle", "rb") as f:
+            raw = pickle.load(f)
+        labels.update({v: k for k, v in raw.items()})
+        print("[INFO] Model loaded:", labels)
+    else:
+        recognizer = None
+        print("[INFO] No trained model found")
+
+
 load_model()
 
+
+# ================== CAMERA ==================
+def get_camera():
+    global camera
+    if camera is None or not camera.isOpened():
+        camera = cv2.VideoCapture(0)
+        time.sleep(0.3)
+    return camera
+
+
+# ================== FACE DETECTION ==================
+def detect_faces(gray):
+    try:
+        faces = face_cascade.detectMultiScale(
+            gray,
+            scaleFactor=1.3,
+            minNeighbors=5,
+            minSize=(40, 40)
+        )
+        if isinstance(faces, np.ndarray):
+            return faces.tolist()
+        return []
+    except cv2.error:
+        return []
+
+
+# ================== ROUTES ==================
 @app.route('/')
 def home():
     return render_template('index.html')
 
+
 @app.route('/video_feed')
 def video_feed():
-    return Response(gen_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+    global STOP_STREAM
+    STOP_STREAM = False
+    return Response(gen_frames(),
+                    mimetype='multipart/x-mixed-replace; boundary=frame')
+
 
 def gen_frames():
-    camera = cv2.VideoCapture(0)  # Open camera for each stream
+    global STOP_STREAM, recognizer
+
     while True:
-        ret, frame = camera.read()
-        if not ret or frame is None:
+        if STOP_STREAM:
             break
-        # (Baaki code same...)
+
+        cam = get_camera()
+        ret, frame = cam.read()
+        if not ret:
+            continue
+
+        # 🔥 FORCE REAL-WORLD VIEW (NO MIRROR)
+        frame = cv2.flip(frame, 1)
+
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, 1.3, 5)
+        faces = detect_faces(gray)
+
         for (x, y, w, h) in faces:
             roi = gray[y:y+h, x:x+w]
+            if roi.size == 0:
+                continue
+
+            roi = cv2.resize(roi, FACE_SIZE)
+            roi = cv2.equalizeHist(roi)
+
             name = "Unknown"
-            conf = 0
-            if recognizer:
+            label = "Unknown"
+            color = (0, 0, 255)
+
+            if recognizer is not None:
                 try:
                     id_, conf = recognizer.predict(roi)
-                    if conf < 100:
+
+                    if conf < 70:
                         name = labels.get(id_, "Unknown")
-                except Exception:
+                        label = "High Match"
+                        color = (0, 255, 0)
+                    elif conf < 100:
+                        name = labels.get(id_, "Unknown")
+                        label = "Medium Match"
+                        color = (0, 255, 255)
+
+                except cv2.error:
                     pass
-            text = f"{name} ({100-int(conf)}%)" if name != "Unknown" else "Unknown"
-            cv2.rectangle(frame, (x, y), (x+w, y+h), (255,0,0), 2)
-            cv2.putText(frame, text, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0,255,0) if name!="Unknown" else (0,0,255), 2)
+
+            text = name if name == "Unknown" else f"{name} - {label}"
+
+            cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
+            cv2.putText(frame, text, (x, y-10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
+
         ret, buffer = cv2.imencode('.jpg', frame)
+        if not ret:
+            continue
+
         yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-    camera.release()  # Release when done
+               b'Content-Type: image/jpeg\r\n\r\n' +
+               buffer.tobytes() + b'\r\n')
+
+
+# ================== SANITIZE ==================
+def sanitize_name(name):
+    name = str(name).strip()
+    name = re.sub(r'\s+', ' ', name)
+    name = re.sub(r'[^\w\s\-]', '', name)
+    return name
+
+
+# ================== CAPTURE ==================
 @app.route('/capture_frame', methods=['POST'])
 def capture_frame():
     data = request.json
-    name = data.get('name')
+    name = sanitize_name(data.get('name'))
     img_data = data.get('image')
+
     if not name or not img_data:
         return jsonify({'status': 'fail'}), 400
-    save_path = os.path.join(UPLOAD_FOLDER, name)
-    originals_path = os.path.join(save_path, "originals")
-    os.makedirs(originals_path, exist_ok=True)
-    os.makedirs(save_path, exist_ok=True)
-    img_str = img_data.split(',')[1]
-    img_bytes = base64.b64decode(img_str)
+
+    person_path = os.path.join(UPLOAD_FOLDER, name)
+    originals = os.path.join(person_path, "originals")
+    os.makedirs(originals, exist_ok=True)
+
+    img_bytes = base64.b64decode(img_data.split(',')[1])
     img_np = np.frombuffer(img_bytes, np.uint8)
     img = cv2.imdecode(img_np, cv2.IMREAD_COLOR)
-    if img is None:
-        return jsonify({'status': 'fail'}), 400
 
-    # Save original image
-    orig_path = os.path.join(originals_path, f"{uuid.uuid4().hex}.jpg")
-    cv2.imwrite(orig_path, img)
+    # 🔥 SAME FLIP AS LIVE STREAM
+    img = cv2.flip(img, 1)
 
-    # Detect face(s) and save cropped versions for training
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    faces = face_cascade.detectMultiScale(gray, 1.3, 5)
-    face_found = False
+    cv2.imwrite(os.path.join(originals, f"{uuid.uuid4().hex}.jpg"), img)
+
+    faces = detect_faces(gray)
+    saved = 0
+
     for (x, y, w, h) in faces:
         roi = gray[y:y+h, x:x+w]
-        cv2.imwrite(os.path.join(save_path, f"{uuid.uuid4().hex}.jpg"), roi)
-        face_found = True
-    if not face_found:
-        # Still return success so originals are retained for gallery
-        return jsonify({'status': 'success', 'msg': 'No face detected, but original saved.'})
-    return jsonify({'status': 'success'})
+        roi = cv2.resize(roi, FACE_SIZE)
+        roi = cv2.equalizeHist(roi)
+        cv2.imwrite(os.path.join(person_path, f"{uuid.uuid4().hex}.jpg"), roi)
+        saved += 1
 
+    return jsonify({'status': 'success', 'saved': saved})
+
+
+# ================== TRAIN ==================
 @app.route('/train', methods=['POST'])
 def train():
-    global recognizer  # <-- Yeh line add kar
-    recognizer = cv2.face.LBPHFaceRecognizer_create()
-    label_ids = {}
+    global recognizer
+
     x_train = []
-    y_labels = []
+    y_train = []
+    label_ids = {}
     current_id = 0
 
-    # Walk through each person's folder in uploads
-    for person in os.listdir(UPLOAD_FOLDER):
+    for person in sorted(os.listdir(UPLOAD_FOLDER)):
         person_path = os.path.join(UPLOAD_FOLDER, person)
         if not os.path.isdir(person_path):
             continue
-        # Skip the "originals" subfolder
-        for file in os.listdir(person_path):
-            if file == "originals":
-                continue  # Yeh line add kar, originals folder skip kare
-            file_path = os.path.join(person_path, file)
-            if os.path.isdir(file_path):  # skip directories
-                continue
-            if file.endswith(("jpg", "jpeg", "png")):
-                label = person
-                if label not in label_ids:
-                    label_ids[label] = current_id
-                    current_id += 1
-                id_ = label_ids[label]
-                img = cv2.imread(file_path, cv2.IMREAD_GRAYSCALE)
-                if img is None:
-                    continue
-                # Since these are already cropped faces, just add them!
-                x_train.append(img)
-                y_labels.append(id_)
+
+        images = []
+        for f in os.listdir(person_path):
+            full = os.path.join(person_path, f)
+            if os.path.isfile(full) and f.lower().endswith('.jpg'):
+                images.append(f)
+
+        if len(images) < TRAIN_MIN_IMAGES:
+            continue
+
+        label_ids[person] = current_id
+
+        for img_name in images:
+            img = cv2.imread(os.path.join(person_path, img_name),
+                             cv2.IMREAD_GRAYSCALE)
+            img = cv2.resize(img, FACE_SIZE)
+            img = cv2.equalizeHist(img)
+            x_train.append(img)
+            y_train.append(current_id)
+
+        current_id += 1
 
     if not x_train:
-        return jsonify({'status': 'fail', 'msg': 'No faces found!'}), 400
-    recognizer.train(x_train, np.array(y_labels))
+        return jsonify({'status': 'fail', 'msg': 'No training data'}), 400
+
+    recognizer = cv2.face.LBPHFaceRecognizer_create()
+    recognizer.train(x_train, np.array(y_train))
     recognizer.save("recognizer.yml")
-    with open("labels.pickle", 'wb') as f:
+
+    with open("labels.pickle", "wb") as f:
         pickle.dump(label_ids, f)
+
     load_model()
     return jsonify({'status': 'success'})
 
+
+# ================== GALLERY ==================
 @app.route('/gallery')
 def gallery():
     people = []
     for person in os.listdir(UPLOAD_FOLDER):
-        originals_path = os.path.join(UPLOAD_FOLDER, person, "originals")
-        if os.path.isdir(originals_path):
-            images = []
-            for img in os.listdir(originals_path):
-                images.append(f"/static/uploads/{person}/originals/{img}")
-            people.append({'name': person, 'images': images})
-    return render_template("gallery.html", people=people)
+        originals = os.path.join(UPLOAD_FOLDER, person, "originals")
+        if not os.path.isdir(originals):
+            continue
+        images = [f"/static/uploads/{person}/originals/{img}"
+                  for img in os.listdir(originals)]
+        people.append({'name': person, 'images': images})
+    return render_template('gallery.html', people=people)
 
+
+# ================== SHUTDOWN ==================
 @app.route('/shutdown', methods=['POST'])
 def shutdown():
-    camera.release()
+    global STOP_STREAM, camera
+    STOP_STREAM = True
+    if camera:
+        camera.release()
+        camera = None
     cv2.destroyAllWindows()
-    return jsonify({'status': 'Camera stopped'})
+    return jsonify({'status': 'success'})
 
+
+# ================== MAIN ==================
 if __name__ == "__main__":
     try:
-        app.run(debug=True)
+        app.run(debug=False)
     finally:
-        camera.release()
+        if camera:
+            camera.release()
         cv2.destroyAllWindows()

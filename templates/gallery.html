@@ -18,7 +18,7 @@
           <h2>{{ person.name }}</h2>
           <div class="images">
             {% for img in person.images %}
-              <img src="{{ img }}" class="gallery-img" id="img-{{ person_idx }}-{{ loop.index }}">
+              <img src="{{ img }}" alt="{{ person.name }}" class="gallery-img" />
             {% endfor %}
             <svg class="svg-lines"></svg>
           </div>
