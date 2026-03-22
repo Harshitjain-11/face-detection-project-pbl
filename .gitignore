@@ -1,0 +1,42 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+env/
+ENV/
+
+# Flask
+instance/
+.webassets-cache
+
+# VS Code
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment variables
+.env
+
+# Uploads (user generated)
+static/uploads/
+
+# # Model files (optional - agar large hai)
+# *.yml
+# *.pickle
+
+# Debug / temp files
+debug_state.py
+inspect_labels.py
+
+# Database (agar use ho)
+*.db
+*.sqlite3
