@@ -1,129 +1,118 @@
-<!-- <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Face Detection App</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FaceVault — Smart Face Recognition</title>
   <link rel="stylesheet" href="/static/css/style.css" />
-  <link href="https://fonts.googleapis.com/css2?family=Exo:wght@700;900&family=Rajdhani:wght@700&display=swap" rel="stylesheet">
-<link href="https://fonts.googleapis.com/css2?family=Exo:wght@700;900&family=Rajdhani:wght@700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
 </head>
 <body>
   <div id="particles-js"></div>
-  <div class="container">
-    <h1>Face Detection WebApp</h1>
-        <div class="subtitle">AI/ML Powered | Fast & Secure</div>
-<h2 class="typewriter">Welcome to Smart Face Detection</h2>
 
-    <div>
-      <button id="startBtn">Start Webcam</button>
-      <button id="stopBtn" style="display:none;">Stop Webcam</button>
-    </div>
-    <div id="videoBox">
-      <img id="videoFeed" src="" />
-    </div>
-    <form id="captureForm">
-      <input type="text" id="name" placeholder="Enter your name" required>
-      <button type="submit">Capture</button>
-    </form>
-    <button id="trainBtn">Train Model</button>
-    <button onclick="window.location='/gallery'">Gallery</button>
-    <button id="autoCaptureBtn" type="button">Auto Capture 10 Images</button>
-    <div id="msg"></div>
-  </div>
+  <div class="app-shell">
+
+    <!-- ── Header ── -->
+    <header class="app-header">
+      <div class="logo">
+        <span class="logo-icon">◈</span>
+        <span class="logo-text">FaceVault</span>
+      </div>
+      <nav class="app-nav">
+        <a href="/" class="nav-link active">Capture</a>
+        <a href="/gallery" class="nav-link">Gallery</a>
+        <a href="/live" class="nav-link">Live Detection</a>
+      </nav>
+    </header>
+
+    <!-- ── Main ── -->
+    <main class="main-content">
+
+      <!-- Camera panel (left / top on mobile) -->
+      <section class="panel video-panel">
+        <div class="panel-header">
+          <h2 class="panel-title">Camera Feed</h2>
+          <div class="status-dot" id="camStatus"></div>
+        </div>
+
+        <div class="video-wrapper">
+          <div class="video-placeholder" id="videoPlaceholder">
+            <div class="placeholder-icon">◉</div>
+            <p>Camera is off</p>
+            <p class="placeholder-sub">Click "Start Camera" to begin</p>
+          </div>
+          <img id="videoFeed" src="" alt="Live feed" />
+        </div>
+
+        <div class="panel-actions">
+          <button class="btn btn-primary" id="startBtn">▶ Start Camera</button>
+          <button class="btn btn-danger" id="stopBtn" style="display:none;">■ Stop Camera</button>
+        </div>
+      </section>
+
+      <!-- Control panel (right / bottom on mobile) -->
+      <section class="panel control-panel">
+
+        <!-- Enrolment form -->
+        <div class="panel-header">
+          <h2 class="panel-title">Face Enrolment</h2>
+        </div>
+
+        <form id="captureForm" class="capture-form">
+          <label class="field-label" for="name">Person Name</label>
+          <input type="text" id="name" placeholder="e.g. Jane Smith" autocomplete="off" maxlength="50" required />
+          <div class="form-actions">
+            <button type="submit" class="btn btn-secondary">📷 Capture Frame</button>
+            <button type="button" class="btn btn-outline" id="autoCaptureBtn">🔁 Auto (10)</button>
+          </div>
+        </form>
+
+        <div class="divider"></div>
+
+        <!-- Train model -->
+        <div class="train-section">
+          <p class="section-hint">
+            After capturing images for each person, train the model to enable recognition.
+            Each person needs at least 2 captured frames.
+          </p>
+          <button class="btn btn-accent" id="trainBtn">🧠 Train Recognition Model</button>
+        </div>
+
+        <!-- Status message -->
+        <div id="msg" class="status-msg"></div>
+
+        <!-- Progress bar (auto-capture) -->
+        <div class="progress-wrap" id="progressWrap" style="display:none;">
+          <div class="progress-bar-track">
+            <div class="progress-bar-fill" id="progressBarFill"></div>
+          </div>
+          <span class="progress-text" id="progressText"></span>
+        </div>
+
+      </section>
+    </main>
+
+  </div><!-- /.app-shell -->
+
   <script src="https://cdn.jsdelivr.net/npm/particles.js@2.0.0/particles.min.js"></script>
   <script src="/static/js/main.js"></script>
   <script>
     particlesJS("particles-js", {
       particles: {
-        number: { value: 80 },
+        number: { value: 55 },
         shape: { type: "circle" },
-        size: { value: 3 },
-        color: { value: "#3b82f6" }, // blue accent for modern look
-        opacity: { value: 0.45 },
-        move: { speed: 1.5, direction: "none", out_mode: "out" },
-        line_linked: {
-          enable: true,
-          distance: 120,
-          color: "#60a5fa",
-          opacity: 0.25,
-          width: 1
-        }
+        size: { value: 2, random: true },
+        color: { value: "#3b82f6" },
+        opacity: { value: 0.3 },
+        move: { speed: 1.1, direction: "none", out_mode: "out" },
+        line_linked: { enable: true, distance: 130, color: "#60a5fa", opacity: 0.18, width: 1 }
       },
       interactivity: {
         events: { onhover: { enable: true, mode: "repulse" } },
-        modes: {
-          repulse: {
-            distance: 80,
-            duration: 0.4
-          }
-        }
+        modes: { repulse: { distance: 80, duration: 0.4 } }
       },
-      retina_detect: true,
+      retina_detect: true
     });
   </script>
-</body>
-</html> -->
-<!-- templates/index.html -->
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <title>Face Detection App</title>
-  <link rel="stylesheet" href="/static/css/style.css" />
-   <link href="https://fonts.googleapis.com/css2?family=Exo:wght@700;900&family=Rajdhani:wght@700&display=swap" rel="stylesheet">
-<link href="https://fonts.googleapis.com/css2?family=Exo:wght@700;900&family=Rajdhani:wght@700&display=swap" rel="stylesheet">
-</head>
-<body>
-   <div id="particles-js"></div>
-  <div class="container">
-    <h1>Face Detection WebApp</h1>
-     <!-- <div class="subtitle">AI/ML Powered | Fast & Secure</div>
-    <h2 class="typewriter">Welcome to Smart Face Detection</h2> -->
-    <div>
-      <button id="startBtn">Start Webcam</button>
-      <button id="stopBtn" style="display:none;">Stop Webcam</button>
-      <!-- <button id="flipBtn" type="button">Toggle Flip</button> -->
-    </div>
-    <div id="videoBox" style="display:none; margin-top:20px;">
-      <img id="videoFeed" src="" style="max-width:360px; border-radius:12px; border:3px solid #00fff0;" />
-    </div>
-    <form id="captureForm">
-      <input type="text" id="name" placeholder="Enter your name" required>
-      <button type="submit">Capture</button>
-    </form>
-    <button id="trainBtn">Train Model</button>
-    <button onclick="window.location='/gallery'">Gallery</button>
-    <button id="autoCaptureBtn" type="button">Auto Capture 10 Images</button>
-    <div id="msg" style="margin-top:12px;color:#8df;"></div>
-  </div>
-  <script src="https://cdn.jsdelivr.net/npm/particles.js@2.0.0/particles.min.js"></script>
-  <script src="/static/js/main.js"></script>
-  <script>particlesJS("particles-js", {
-      particles: {
-        number: { value: 80 },
-        shape: { type: "circle" },
-        size: { value: 3 },
-        color: { value: "#3b82f6" }, // blue accent for modern look
-        opacity: { value: 0.45 },
-        move: { speed: 1.5, direction: "none", out_mode: "out" },
-        line_linked: {
-          enable: true,
-          distance: 120,
-          color: "#60a5fa",
-          opacity: 0.25,
-          width: 1
-        }
-      },
-      interactivity: {
-        events: { onhover: { enable: true, mode: "repulse" } },
-        modes: {
-          repulse: {
-            distance: 80,
-            duration: 0.4
-          }
-        }
-      },
-      retina_detect: true,
-    });</script>
 </body>
 </html>
