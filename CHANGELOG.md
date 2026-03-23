@@ -5,105 +5,96 @@
 
 ---
 
-## Latest Changes
+## v2 — Recognition Fix & Anti-Spoofing Upgrade
 
-### File: `app.py` (Main Backend)
+### File: `requirements.txt`
 
-| Line(s) | Kya badla / What changed | Kyun / Why |
-|---------|--------------------------|------------|
-| 1–11 | `import math` hataya; `threading` add kiya | `math` kabhi use nahi hota tha. Threading locks ke liye zaroori hai. |
-| 29–32 | `camera_lock` aur `model_lock` add kiye | Camera aur model ek saath multiple requests mein use hote the — crash hone ka risk tha. |
-| 46–47 | `clahe = cv2.createCLAHE(...)` add kiya | Purana `equalizeHist` low-light mein kaam nahi karta tha. CLAHE better hai. |
-| 65–68 | `EYE_CASCADE_PATH` + `eye_cascade` add kiya | Aankhon ki detection se pata chalega ki face real hai ya printed photo. |
-| 82–86 | `preprocess_face()` function add kiya | Face ROI ko resize + CLAHE apply karna ek jagah karna behtar hai. |
-| 89–100 | `check_liveness()` function add kiya | Aankhon ki ginatee karta hai — agar 0 hain to `SPOOF?` dikhayega. |
-| 107–109 | `scaleFactor` 1.3 → 1.1 kiya | Chhote faces bhi detect hone lagenge. |
-| 121–128 | `sanitize_name()` mein `NAME_MAX_LEN = 50` add kiya | Bahut lamba naam server par problem bana sakta tha. |
-| 134–136 | `/live` route add kiya | Pehle yeh route tha hi nahi — HTML isko link karta tha magar Flask mein register nahi tha. |
-| 171–196 | `gen_frames()` mein liveness check + CONF_HIGH/CONF_MEDIUM thresholds | Pehle thresholds 70/100 the (magic numbers). Ab named constants hain aur confidence number bhi dikhata hai. |
-| 222–275 | `/capture_frame` mein `os.path.basename()` + `try/except` for base64 | **Security fix**: user `../` deke kisi bhi folder mein file likh sakta tha. Ab blocked hai. |
-| 278–350 | `/train` mein `if img is None: continue` add kiya | Agar ek bhi image corrupt thi to poori training crash ho jaati thi. Ab skip hoti hai. |
-| 354–368 | `/gallery` mein `sorted()` add kiya | Pehle random order mein dikhta tha. |
-| 371–378 | `/shutdown` mein `with camera_lock:` add kiya | Thread-safe shutdown. |
+| Kya badla | Kyun |
+|-----------|------|
+| `opencv-python` → `opencv-contrib-python` | **CRITICAL fix.** `cv2.face.LBPHFaceRecognizer_create()` is in the `contrib` package. Without this change the app crashes on import. |
+| `numpy` explicitly added | Ensures correct numpy is installed alongside OpenCV. |
 
 ---
 
-### File: `static/css/style.css` (Styling)
+### File: `app.py`
 
-| Kya badla / What changed | Kyun / Why |
-|--------------------------|------------|
-| Poora file rewrite — CSS variables (`:root`) add kiye | Ab ek jagah se colors change kar sakte hain (`--accent-blue`, `--surface`, etc.) |
-| `.app-header` + `.app-nav` add kiya | Sticky navbar jo teeno pages par dikhega |
-| `.main-content` grid layout (2 columns) | Pehle sab ek chhoti si box mein tha. Ab proper layout hai. |
-| `.btn-primary`, `.btn-secondary`, `.btn-danger`, `.btn-accent`, `.btn-outline` | Different buttons ke liye alag styling |
-| `.status-msg.info/.success/.error/.warn` | Green/Red/Yellow/Blue color-coded messages |
-| `.progress-bar-track` + `.progress-bar-fill` | Auto-capture ke liye progress bar |
-| `@media (prefers-reduced-motion: reduce)` | Accessibility — jo log animations off rakhte hain unke liye |
-| Responsive: `@media (max-width: 900px)` + `(max-width: 600px)` | Mobile friendly |
-
----
-
-### File: `static/js/main.js` (Frontend Logic)
-
-| Line(s) | Kya badla / What changed | Kyun / Why |
-|---------|--------------------------|------------|
-| 1–91 | ~90 lines ka commented-out purana code hataya | Dead code tha — confusing tha |
-| 17 | `let cameraActive = false;` add kiya | Pehle camera status check karne ka tarika galat tha (URL string se check karna unreliable hai) |
-| 40–42 | Purana `isCameraOn()` function hataya | `cameraActive` flag se replace kiya — reliable hai |
-| `startBtn.onclick` | `cameraActive = true` set karta hai | Camera on hone par flag update hota hai |
-| `stopBtn.onclick` | `cameraActive = false` set karta hai | Camera off hone par flag update hota hai |
-| 229–239 (purani file) | `flipBtn` wala code hataya | **Bug fix**: `flipBtn` element HTML mein kabhi tha hi nahi — page load par `ReferenceError` aata tha |
-| `showMsg(text, type)` function | Typed messages (info/success/error/warn) | Ab messages color-coded hain |
-| `showProgress` / `hideProgress` | Progress bar functions add kiye | Auto-capture progress dikhane ke liye |
-| `autoCaptureBtn.onclick` | `data.saved > 0` check add kiya | Pehle success tab bhi count karta tha jab face detect na ho |
+| Where | What changed | Why |
+|-------|-------------|-----|
+| Line 12 | `import collections` added | Needed for `collections.deque` used in motion buffer. |
+| Line 13 | `import shutil` added | Needed for `shutil.rmtree()` in delete endpoint. |
+| Lines 43–44 | `CONF_HIGH 55→50`, `CONF_MEDIUM 80→75` | Stricter thresholds → fewer false positives. LBPH lower = more confident, so 50 means "very close match only". |
+| Lines 47–50 | `MOTION_FRAMES = 6`, `MOTION_THRESHOLD = 2.5` | Config for new motion-based liveness. |
+| Lines 53–55 | `_face_motion_buf`, `_face_buf_lock` | Thread-safe rolling frame buffer per tracked face position. |
+| Lines 88–96 | `augment_images()` function added | Generates 4 variants per captured face (original + flip + bright + dark). Quadruples training data without extra captures. This is the main fix for "fails when multiple people are trained". |
+| Lines 99–108 | `check_eye_liveness()` — **now requires 2 eyes** | `len(eyes) >= 1` → `len(eyes) >= 2`. Real faces have two eyes; a flat photo of a face rarely shows both at detector scale. |
+| Lines 111–131 | `check_motion_liveness()` added | Keeps a rolling `deque(maxlen=6)` of 48×48 face crops. Calculates mean abs-diff between consecutive frames. If avg diff ≤ 2.5 px → static image/replay attack → `SPOOF? (static)`. |
+| Lines 133–136 | `cleanup_face_buffers()` added | Removes buffers for faces that are no longer in the frame, preventing unbounded memory growth during a long session. |
+| Lines 179–192 | `gen_frames()` — dual liveness | Now calls both `check_eye_liveness` AND `check_motion_liveness`. Shows `SPOOF? (no eyes)` or `SPOOF? (static)` with distinct reason. Also cleans up stale face buffers each frame. |
+| Lines 191–192 | `face_key = (x // 50, y // 50)` | Approximate grid position used as the motion-buffer dictionary key to track individual faces in multi-face scenes. |
+| Lines 268–277 | `train()` — data augmentation | `augment_images(img)` is called for every loaded face image, quadrupling the training set. This makes the model more robust for multiple users and better at recognising faces under varying lighting. |
+| Lines 284–295 | `/delete_person/<name>` endpoint added | POST request deletes a person's entire folder from `static/uploads/`. Uses `sanitize_name` + `os.path.basename` to prevent path traversal. |
 
 ---
 
-### File: `templates/index.html` (Home Page)
+### File: `static/css/style.css`
 
-| Kya badla / What changed | Kyun / Why |
-|--------------------------|------------|
-| ~65 lines ka commented-out code hataya (file ke top par tha) | Dead code |
-| Sticky header + navigation add kiya | Easy navigation teeno pages ke beech |
-| `.panel.video-panel` + `.panel.control-panel` layout | Two-column layout — professional dikhta hai |
-| Progress bar HTML add kiya (`#progressWrap`) | Auto-capture ke dauran progress dikhega |
-| Status message div (`#msg`) ko typed styling mili | Color-coded feedback |
-| Font change: Google Fonts se `Inter` + `Orbitron` load hota hai | Clean, modern font |
+| What changed | Why |
+|-------------|-----|
+| `.person-block-header` flex row added | Lays out the person name and delete button side-by-side. |
+| `.person-name` — `margin-bottom` moved to `.person-block-header` | Needed because the name is now inside the header div. |
+| `.btn-sm` utility class added | Smaller variant for the compact delete button in the gallery. |
 
 ---
 
-### File: `templates/gallery.html` (Gallery Page)
+### File: `templates/gallery.html`
 
-| Kya badla / What changed | Kyun / Why |
-|--------------------------|------------|
-| Sticky header + navigation add kiya | Consistent navigation |
-| `gallery-tree` grid layout | Responsive grid — mobile par bhi theek dikhta hai |
-| Empty state message add kiya | Agar koi face enrolled nahi hai to "No faces enrolled yet" dikhega |
-| Image count per person | Har person ke neeche kitni images hain woh dikhega |
+| What changed | Why |
+|-------------|-----|
+| `<div class="person-block-header">` wraps name + delete button | New flex row layout for the card header. |
+| `<button class="btn btn-danger btn-sm delete-btn" data-name="...">✕</button>` | Delete button per enrolled person. |
+| `document.querySelectorAll('.delete-btn')` JS block | Wires each delete button: calls `POST /delete_person/<name>`, removes the card on success. |
 
 ---
 
-### File: `templates/live.html` (Live Detection Page)
+## v1 — Initial UI Redesign & Security Fixes
 
-| Kya badla / What changed | Kyun / Why |
-|--------------------------|------------|
-| Sticky header + navigation add kiya | Consistent navigation |
-| Status dot (animated green dot) add kiya | Stream on/off visually dikhta hai |
-| Status message typing fix | Start/stop par proper messages |
-| `particles-js` background hataya | Live detection page par unnecessary tha, performance better |
+### File: `app.py`
+
+| Line(s) | What changed | Why |
+|---------|-------------|-----|
+| 29–32 | `camera_lock` + `model_lock` added | Thread-safety for camera and model access. |
+| 46–47 | CLAHE added | Better contrast normalisation than `equalizeHist`. |
+| 65–68 | Eye cascade loaded | Used for liveness detection. |
+| 82–86 | `preprocess_face()` | Centralised resize + CLAHE. |
+| 89–101 | `check_liveness()` | Basic eye-based liveness check. |
+| 121–128 | `sanitize_name()` + `NAME_MAX_LEN` | Prevents special characters in person names. |
+| 134–136 | `/live` route registered | Route was linked in HTML but not defined in Flask. |
+| 222–232 | `os.path.basename()` in capture | **Security fix**: blocked `../` path traversal. |
+| 278–350 | Training: `if img is None: continue` | Prevents crash on corrupt images. |
+| 354–368 | Gallery: `sorted()` | Deterministic ordering. |
+| 371–378 | Shutdown: `with camera_lock:` | Thread-safe shutdown. |
+
+### File: `static/css/style.css`
+Complete redesign: CSS variables, sticky nav, two-column layout, responsive grid, accessibility.
+
+### File: `static/js/main.js`
+- `cameraActive` flag replacing unreliable src-string check.
+- `showMsg(text, type)` for colour-coded status messages.
+- Progress bar for auto-capture.
+
+### Files: `templates/index.html`, `live.html`, `gallery.html`
+Modern two-column layout, sticky header, status dots, empty-state messages.
 
 ---
 
 ## Summary of All Changes (Quick Reference)
 
 ```
-app.py               ← Backend logic: security, liveness, threading, training fixes
-static/css/style.css ← Complete UI redesign with CSS variables and components
-static/js/main.js    ← Bug fixes, dead code removal, better state management
-templates/index.html ← New layout, progress bar, clean structure
-templates/gallery.html ← Grid layout, empty state, image count
-templates/live.html  ← Navigation, status dot, clean layout
-CHANGELOG.md         ← Yeh file (changes ki list)
+requirements.txt       ← CRITICAL: opencv-python → opencv-contrib-python + numpy
+app.py                 ← Motion liveness, 2-eye check, augmentation, delete endpoint, stricter thresholds
+static/css/style.css   ← person-block-header layout, btn-sm
+templates/gallery.html ← Delete button per person + JS delete handler
+CHANGELOG.md           ← This file
 ```
 
 ---
@@ -111,7 +102,8 @@ CHANGELOG.md         ← Yeh file (changes ki list)
 ## How to run the project
 
 ```bash
-pip install flask opencv-contrib-python pillow
+pip install -r requirements.txt
 python app.py
-# Browser mein kholein: http://127.0.0.1:5000
+# Open in browser: http://127.0.0.1:5000
 ```
+

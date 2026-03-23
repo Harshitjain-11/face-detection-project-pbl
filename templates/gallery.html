@@ -37,7 +37,12 @@
       <div class="gallery-tree">
         {% for person in people %}
         <div class="person-block">
-          <div class="person-name">{{ person.name }}</div>
+          <div class="person-block-header">
+            <div class="person-name">{{ person.name }}</div>
+            <button class="btn btn-danger btn-sm delete-btn"
+                    data-name="{{ person.name }}"
+                    title="Delete {{ person.name }}">✕</button>
+          </div>
           <div class="person-images">
             {% for img in person.images %}
             <img src="{{ img }}" alt="{{ person.name }}" class="gallery-img" loading="lazy" />
@@ -76,6 +81,24 @@
       },
       interactivity: { events: { onhover: { enable: false } } },
       retina_detect: true
+    });
+
+    document.querySelectorAll('.delete-btn').forEach(btn => {
+      btn.addEventListener('click', async function () {
+        const name = this.dataset.name;
+        if (!confirm(`Delete all data for "${name}"? This cannot be undone.`)) return;
+        try {
+          const res  = await fetch(`/delete_person/${encodeURIComponent(name)}`, { method: 'POST' });
+          const data = await res.json();
+          if (data.status === 'success') {
+            this.closest('.person-block').remove();
+          } else {
+            alert('Delete failed: ' + (data.msg || 'Unknown error'));
+          }
+        } catch (e) {
+          alert('Network error while deleting.');
+        }
+      });
     });
   </script>
 </body>

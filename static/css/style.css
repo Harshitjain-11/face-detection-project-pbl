@@ -462,6 +462,13 @@ input[type="text"]::placeholder {
   box-shadow: 0 10px 28px rgba(59, 130, 246, 0.14);
 }
 
+.person-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.85rem;
+}
+
 .person-name {
   font-family: 'Orbitron', sans-serif;
   font-size: 0.82rem;
@@ -469,7 +476,12 @@ input[type="text"]::placeholder {
   color: var(--accent-cyan);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  margin-bottom: 0.85rem;
+}
+
+.btn-sm {
+  padding: 0.28rem 0.6rem;
+  font-size: 0.75rem;
+  border-radius: calc(var(--radius) / 2);
 }
 
 .person-images {

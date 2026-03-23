@@ -7,6 +7,8 @@ import base64
 import pickle
 import re
 import threading
+import collections
+import shutil
 import cv2
 import numpy as np
 
@@ -20,35 +22,44 @@ CASCADE_PATH = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
 EYE_CASCADE_PATH = cv2.data.haarcascades + 'haarcascade_eye.xml'
 
 face_cascade = cv2.CascadeClassifier(CASCADE_PATH)
-eye_cascade = cv2.CascadeClassifier(EYE_CASCADE_PATH)
+eye_cascade  = cv2.CascadeClassifier(EYE_CASCADE_PATH)
 
 if face_cascade.empty():
     raise IOError("Haarcascade not loaded")
 
-camera = None
+camera      = None
 camera_lock = threading.Lock()
 
-recognizer = None
-model_lock = threading.Lock()
-labels = {}
+recognizer  = None
+model_lock  = threading.Lock()
+labels: dict = {}
 
 STOP_STREAM = False
 
 # Tunables
-FACE_SIZE = (200, 200)
+FACE_SIZE      = (200, 200)
 TRAIN_MIN_IMAGES = 2
-NAME_MAX_LEN = 50
+NAME_MAX_LEN   = 50
 
-# Confidence thresholds (lower = more confident for LBPH)
-CONF_HIGH = 55
-CONF_MEDIUM = 80
+# Confidence thresholds (LBPH: lower value = better match)
+CONF_HIGH   = 50   # ≤ 50  → recognised with high confidence
+CONF_MEDIUM = 75   # ≤ 75  → recognised with medium confidence
+# > 75 → Unknown
+
+# Motion-liveness parameters
+MOTION_FRAMES    = 6     # frames kept in rolling buffer
+MOTION_THRESHOLD = 2.5   # minimum mean pixel-diff to pass as "live"
 
 # CLAHE for improved contrast normalisation
 clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
+# Per-face motion buffers  { face_key -> deque of small gray frames }
+_face_motion_buf: dict = {}
+_face_buf_lock = threading.Lock()
+
 
 # ================== LOAD MODEL ==================
-def load_model():
+def load_model() -> None:
     global recognizer, labels
     with model_lock:
         labels.clear()
@@ -85,20 +96,64 @@ def preprocess_face(roi):
     return clahe.apply(roi_resized)
 
 
-# ================== LIVENESS DETECTION ==================
-def check_liveness(face_roi_gray):
+# ================== AUGMENTATION ==================
+def augment_images(img: np.ndarray) -> list:
     """
-    Basic liveness check: detect eyes inside the face ROI.
-    Printed photos rarely show both eyes clearly at the expected scale.
-    Returns True if at least one eye is found (likely a real face).
+    Return a list of augmented variants of a preprocessed face image.
+    Augmentations: original, horizontal flip, +30 brightness, -30 brightness.
+    Quadrupling effective training data without extra captures.
+    """
+    variants = [img]
+    variants.append(cv2.flip(img, 1))
+    variants.append(np.clip(img.astype(np.int16) + 30, 0, 255).astype(np.uint8))
+    variants.append(np.clip(img.astype(np.int16) - 30, 0, 255).astype(np.uint8))
+    return variants
+
+
+# ================== LIVENESS: EYE DETECTION ==================
+def check_eye_liveness(face_roi_gray: np.ndarray) -> bool:
+    """
+    Require at least 2 eyes detected inside the face ROI.
+    Printed photos rarely expose both eyes at the expected scale.
     """
     eyes = eye_cascade.detectMultiScale(
         face_roi_gray,
         scaleFactor=1.1,
         minNeighbors=5,
-        minSize=(20, 20)
+        minSize=(20, 20),
     )
-    return len(eyes) >= 1
+    return len(eyes) >= 2
+
+
+# ================== LIVENESS: MOTION DETECTION ==================
+def check_motion_liveness(face_roi_gray: np.ndarray, face_key: tuple) -> bool:
+    """
+    Frame-difference anti-spoofing.
+    Keeps a rolling buffer of small face ROIs per tracked face position.
+    A static photo/screen replay shows near-zero inter-frame difference.
+    Returns True once enough motion is observed (or while buffer is filling).
+    """
+    small = cv2.resize(face_roi_gray, (48, 48))
+    with _face_buf_lock:
+        if face_key not in _face_motion_buf:
+            _face_motion_buf[face_key] = collections.deque(maxlen=MOTION_FRAMES)
+        buf = _face_motion_buf[face_key]
+        buf.append(small)
+        if len(buf) < 2:
+            return True  # not enough data yet — give benefit of the doubt
+        diffs = [
+            float(np.mean(cv2.absdiff(buf[i - 1], buf[i])))
+            for i in range(1, len(buf))
+        ]
+    return float(np.mean(diffs)) > MOTION_THRESHOLD
+
+
+def cleanup_face_buffers(active_keys: set) -> None:
+    """Remove motion buffers for faces that are no longer visible."""
+    with _face_buf_lock:
+        stale = [k for k in _face_motion_buf if k not in active_keys]
+        for k in stale:
+            del _face_motion_buf[k]
 
 
 # ================== FACE DETECTION ==================
@@ -108,7 +163,7 @@ def detect_faces(gray):
             gray,
             scaleFactor=1.1,
             minNeighbors=5,
-            minSize=(40, 40)
+            minSize=(40, 40),
         )
         if isinstance(faces, np.ndarray):
             return faces.tolist()
@@ -118,7 +173,7 @@ def detect_faces(gray):
 
 
 # ================== SANITIZE ==================
-def sanitize_name(name):
+def sanitize_name(name: str) -> str:
     name = str(name).strip()
     name = re.sub(r'\s+', ' ', name)
     name = re.sub(r'[^\w\s\-]', '', name)
@@ -160,24 +215,36 @@ def gen_frames():
             continue
 
         frame = cv2.flip(frame, 1)
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = detect_faces(gray)
 
+        active_keys: set = set()
+
         for (x, y, w, h) in faces:
-            roi = gray[y:y+h, x:x+w]
+            roi = gray[y:y + h, x:x + w]
             if roi.size == 0:
                 continue
 
-            is_live = check_liveness(roi)
+            # Approximate location key for motion buffer (50px grid)
+            face_key = (x // 50, y // 50)
+            active_keys.add(face_key)
+
+            # --- Dual liveness check ---
+            eye_live    = check_eye_liveness(roi)
+            motion_live = check_motion_liveness(roi, face_key)
+            is_live     = eye_live and motion_live
+
             roi_proc = preprocess_face(roi)
 
-            name = "Unknown"
             label_text = "Unknown"
-            box_color = (60, 60, 255)
+            box_color  = (60, 60, 255)
             text_color = (60, 60, 255)
 
             if not is_live:
-                label_text = "SPOOF?"
+                if not eye_live:
+                    label_text = "SPOOF? (no eyes)"
+                else:
+                    label_text = "SPOOF? (static)"
                 box_color = (0, 0, 200)
                 text_color = (0, 0, 200)
             else:
@@ -186,24 +253,26 @@ def gen_frames():
                 if cur_rec is not None:
                     try:
                         id_, conf = cur_rec.predict(roi_proc)
-                        if conf < CONF_HIGH:
+                        if conf <= CONF_HIGH:
                             name = labels.get(id_, "Unknown")
                             label_text = f"{name} ({conf:.0f})"
-                            box_color = (0, 200, 80)
+                            box_color  = (0, 200, 80)
                             text_color = (0, 220, 80)
-                        elif conf < CONF_MEDIUM:
+                        elif conf <= CONF_MEDIUM:
                             name = labels.get(id_, "Unknown")
                             label_text = f"{name}? ({conf:.0f})"
-                            box_color = (0, 200, 200)
+                            box_color  = (0, 200, 200)
                             text_color = (0, 220, 220)
                         else:
                             label_text = f"Unknown ({conf:.0f})"
                     except cv2.error:
                         pass
 
-            cv2.rectangle(frame, (x, y), (x+w, y+h), box_color, 2)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), box_color, 2)
             cv2.putText(frame, label_text, (x, y - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.65, text_color, 2)
+
+        cleanup_face_buffers(active_keys)
 
         try:
             ret, buffer = cv2.imencode('.jpg', frame)
@@ -220,20 +289,20 @@ def gen_frames():
 # ================== CAPTURE ==================
 @app.route('/capture_frame', methods=['POST'])
 def capture_frame():
-    data = request.json or {}
-    name = sanitize_name(data.get('name', ''))
-    img_data = data.get('image', '')
+    data      = request.json or {}
+    name      = sanitize_name(data.get('name', ''))
+    img_data  = data.get('image', '')
 
     if not name or not img_data:
         return jsonify({'status': 'fail', 'msg': 'Name or image missing'}), 400
 
-    # Prevent path traversal: enforce single-level directory name
+    # Prevent path traversal
     safe_name = os.path.basename(name)
     if not safe_name or safe_name in ('.', '..'):
         return jsonify({'status': 'fail', 'msg': 'Invalid name'}), 400
 
     person_path = os.path.join(UPLOAD_FOLDER, safe_name)
-    originals = os.path.join(person_path, "originals")
+    originals   = os.path.join(person_path, "originals")
     os.makedirs(originals, exist_ok=True)
 
     try:
@@ -242,11 +311,11 @@ def capture_frame():
         return jsonify({'status': 'fail', 'msg': 'Invalid image data'}), 400
 
     img_np = np.frombuffer(img_bytes, np.uint8)
-    img = cv2.imdecode(img_np, cv2.IMREAD_COLOR)
+    img    = cv2.imdecode(img_np, cv2.IMREAD_COLOR)
     if img is None:
         return jsonify({'status': 'fail', 'msg': 'Could not decode image'}), 400
 
-    img = cv2.flip(img, 1)
+    img  = cv2.flip(img, 1)
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     cv2.imwrite(os.path.join(originals, f"{uuid.uuid4().hex}.jpg"), img)
 
@@ -254,7 +323,7 @@ def capture_frame():
     saved = 0
 
     for (x, y, w, h) in faces:
-        roi = gray[y:y+h, x:x+w]
+        roi = gray[y:y + h, x:x + w]
         if roi.size == 0:
             continue
         roi_proc = preprocess_face(roi)
@@ -265,24 +334,24 @@ def capture_frame():
         return jsonify({
             'status': 'success',
             'saved': 0,
-            'msg': 'No face detected — position your face clearly in frame.'
+            'msg': 'No face detected — position your face clearly in frame.',
         })
     return jsonify({
         'status': 'success',
         'saved': saved,
-        'msg': f'{saved} face(s) captured for "{safe_name}".'
+        'msg': f'{saved} face(s) captured for "{safe_name}".',
     })
 
 
 # ================== TRAIN ==================
 @app.route('/train', methods=['POST'])
 def train():
-    x_train = []
-    y_train = []
-    label_ids = {}
+    x_train    = []
+    y_train    = []
+    label_ids  = {}
     current_id = 0
-    skipped = []
-    trained = []
+    skipped    = []
+    trained    = []
 
     for person in sorted(os.listdir(UPLOAD_FOLDER)):
         person_path = os.path.join(UPLOAD_FOLDER, person)
@@ -306,16 +375,16 @@ def train():
             img = cv2.imread(os.path.join(person_path, img_name),
                              cv2.IMREAD_GRAYSCALE)
             if img is None:
-                # Skip unreadable files instead of crashing
                 continue
             img = cv2.resize(img, FACE_SIZE)
             img = clahe.apply(img)
-            x_train.append(img)
-            y_train.append(current_id)
+            # Data augmentation — multiply training samples per capture
+            for variant in augment_images(img):
+                x_train.append(variant)
+                y_train.append(current_id)
             loaded += 1
 
         if loaded < TRAIN_MIN_IMAGES:
-            # Not enough valid images after filtering
             del label_ids[person]
             skipped.append({'person': person, 'count': loaded})
             continue
@@ -328,7 +397,7 @@ def train():
             'status': 'fail',
             'msg': (f'No training data found. '
                     f'Each person needs at least {TRAIN_MIN_IMAGES} captured images.'),
-            'skipped': skipped
+            'skipped': skipped,
         }), 400
 
     new_rec = cv2.face.LBPHFaceRecognizer_create(
@@ -344,9 +413,10 @@ def train():
     return jsonify({
         'status': 'success',
         'msg': (f'Model trained on {len(trained)} person(s) '
-                f'using {len(x_train)} image(s).'),
+                f'using {len(x_train)} sample(s) '
+                f'(with augmentation).'),
         'trained': trained,
-        'skipped': skipped
+        'skipped': skipped,
     })
 
 
@@ -365,6 +435,20 @@ def gallery():
         ])
         people.append({'name': person, 'images': images})
     return render_template('gallery.html', people=people)
+
+
+# ================== DELETE PERSON ==================
+@app.route('/delete_person/<name>', methods=['POST'])
+def delete_person(name):
+    safe_name   = os.path.basename(sanitize_name(name))
+    person_path = os.path.join(UPLOAD_FOLDER, safe_name)
+    if not os.path.isdir(person_path):
+        return jsonify({'status': 'fail', 'msg': 'Person not found.'}), 404
+    try:
+        shutil.rmtree(person_path)
+    except OSError as exc:
+        return jsonify({'status': 'fail', 'msg': str(exc)}), 500
+    return jsonify({'status': 'success', 'msg': f'"{safe_name}" deleted.'})
 
 
 # ================== SHUTDOWN ==================

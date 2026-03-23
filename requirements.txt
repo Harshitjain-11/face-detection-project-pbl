@@ -1,3 +1,4 @@
 flask
 pillow
-opencv-python
+numpy
+opencv-contrib-python
