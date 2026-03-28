@@ -1,3 +1,6 @@
 flask
 pillow
-opencv-python
+numpy
+opencv-contrib-python
+dlib
+face_recognition
