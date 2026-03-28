@@ -1,4 +1,12 @@
 
+try:
+    import face_recognition
+except ImportError as _exc:
+    raise ImportError(
+        "face_recognition is required. Install it with:\n"
+        "  pip install dlib face_recognition"
+    ) from _exc
+
 from flask import Flask, render_template, request, Response, jsonify
 import os
 import time
@@ -18,7 +26,7 @@ app = Flask(__name__)
 UPLOAD_FOLDER = 'static/uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-CASCADE_PATH = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+CASCADE_PATH     = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
 EYE_CASCADE_PATH = cv2.data.haarcascades + 'haarcascade_eye.xml'
 
 face_cascade = cv2.CascadeClassifier(CASCADE_PATH)
@@ -30,53 +38,58 @@ if face_cascade.empty():
 camera      = None
 camera_lock = threading.Lock()
 
-recognizer  = None
-model_lock  = threading.Lock()
-labels: dict = {}
+# Deep-learning embedding store {name: [128-d numpy array, …]}
+known_embeddings: dict = {}
+embed_lock = threading.Lock()
 
 STOP_STREAM = False
 
 # Tunables
-FACE_SIZE      = (200, 200)
 TRAIN_MIN_IMAGES = 2
-NAME_MAX_LEN   = 50
+NAME_MAX_LEN     = 50
 
-# Confidence thresholds (LBPH: lower value = better match)
-CONF_HIGH   = 50   # ≤ 50  → recognised with high confidence
-CONF_MEDIUM = 75   # ≤ 75  → recognised with medium confidence
-# > 75 → Unknown
+# Deep-learning recognition thresholds
+# face_recognition uses L2 / Euclidean distance (0 = identical, 1 = very different)
+DL_THRESHOLD_HIGH   = 0.45   # ≤ 0.45 → high-confidence match
+DL_THRESHOLD_MEDIUM = 0.55   # ≤ 0.55 → possible match (shown with ?)
+# > 0.55 → Unknown
 
 # Motion-liveness parameters
 MOTION_FRAMES    = 6     # frames kept in rolling buffer
 MOTION_THRESHOLD = 2.5   # minimum mean pixel-diff to pass as "live"
 
-# CLAHE for improved contrast normalisation
+# CLAHE — kept for liveness preprocessing
 clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
 # Per-face motion buffers  { face_key -> deque of small gray frames }
 _face_motion_buf: dict = {}
 _face_buf_lock = threading.Lock()
 
+# Embedding store file
+DL_EMBED_FILE = "embeddings.pickle"
 
-# ================== LOAD MODEL ==================
-def load_model() -> None:
-    global recognizer, labels
-    with model_lock:
-        labels.clear()
-        if os.path.exists("recognizer.yml") and os.path.exists("labels.pickle"):
-            new_rec = cv2.face.LBPHFaceRecognizer_create()
-            new_rec.read("recognizer.yml")
-            with open("labels.pickle", "rb") as f:
-                raw = pickle.load(f)
-            labels.update({v: k for k, v in raw.items()})
-            recognizer = new_rec
-            print("[INFO] Model loaded:", labels)
+
+# ================== LOAD EMBEDDINGS ==================
+def load_embeddings() -> None:
+    """Load persisted deep-learning face embeddings from disk."""
+    global known_embeddings
+    with embed_lock:
+        known_embeddings.clear()
+        if os.path.exists(DL_EMBED_FILE):
+            with open(DL_EMBED_FILE, "rb") as f:
+                data = pickle.load(f)
+            if isinstance(data, dict):
+                known_embeddings.update(data)
+                total = sum(len(v) for v in data.values())
+                print(f"[INFO] DL embeddings loaded: {list(data.keys())} "
+                      f"({total} vectors)")
+            else:
+                print("[WARN] embeddings.pickle has unexpected format — ignoring")
         else:
-            recognizer = None
-            print("[INFO] No trained model found")
+            print("[INFO] No DL embeddings found — model not trained yet")
 
 
-load_model()
+load_embeddings()
 
 
 # ================== CAMERA ==================
@@ -87,27 +100,6 @@ def get_camera():
             camera = cv2.VideoCapture(0)
             time.sleep(0.3)
         return camera
-
-
-# ================== PREPROCESSING ==================
-def preprocess_face(roi):
-    """Resize and apply CLAHE to a grayscale face ROI."""
-    roi_resized = cv2.resize(roi, FACE_SIZE)
-    return clahe.apply(roi_resized)
-
-
-# ================== AUGMENTATION ==================
-def augment_images(img: np.ndarray) -> list:
-    """
-    Return a list of augmented variants of a preprocessed face image.
-    Augmentations: original, horizontal flip, +30 brightness, -30 brightness.
-    Quadrupling effective training data without extra captures.
-    """
-    variants = [img]
-    variants.append(cv2.flip(img, 1))
-    variants.append(np.clip(img.astype(np.int16) + 30, 0, 255).astype(np.uint8))
-    variants.append(np.clip(img.astype(np.int16) - 30, 0, 255).astype(np.uint8))
-    return variants
 
 
 # ================== LIVENESS: EYE DETECTION ==================
@@ -157,7 +149,7 @@ def cleanup_face_buffers(active_keys: set) -> None:
 
 
 # ================== FACE DETECTION ==================
-def detect_faces(gray):
+def detect_faces(gray: np.ndarray) -> list:
     try:
         faces = face_cascade.detectMultiScale(
             gray,
@@ -170,6 +162,50 @@ def detect_faces(gray):
         return []
     except cv2.error:
         return []
+
+
+# ================== DL RECOGNITION ==================
+def dl_recognize(
+    rgb_frame: np.ndarray,
+    face_locations: list,
+    current_embeddings: dict,
+) -> list:
+    """
+    Run batched deep-learning face recognition for one video frame.
+
+    face_locations: list of (top, right, bottom, left) — face_recognition format.
+    current_embeddings: shallow-copied snapshot of known_embeddings.
+
+    Returns a list of (name, distance) tuples, one per location.
+    distance is in [0, 1]; lower = more similar.
+    """
+    if not face_locations:
+        return []
+
+    if not current_embeddings:
+        return [("Unknown", 1.0)] * len(face_locations)
+
+    try:
+        encodings = face_recognition.face_encodings(
+            rgb_frame, face_locations, num_jitters=1
+        )
+    except Exception:
+        return [("Unknown", 1.0)] * len(face_locations)
+
+    results = []
+    for enc in encodings:
+        best_dist = float("inf")
+        best_name = "Unknown"
+        for person_name, person_encs in current_embeddings.items():
+            if not person_encs:
+                continue
+            dists = face_recognition.face_distance(person_encs, enc)
+            min_d = float(np.min(dists))
+            if min_d < best_dist:
+                best_dist = min_d
+                best_name = person_name
+        results.append((best_name, best_dist))
+    return results
 
 
 # ================== SANITIZE ==================
@@ -214,59 +250,58 @@ def gen_frames():
         if not ret:
             continue
 
-        frame = cv2.flip(frame, 1)
-        gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = detect_faces(gray)
+        frame     = cv2.flip(frame, 1)
+        gray      = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        faces     = detect_faces(gray)
 
         active_keys: set = set()
+
+        # Separate live faces (pass liveness) for batched DL recognition
+        live_faces:   list = []  # (x, y, w, h)
+        fr_locations: list = []  # (top, right, bottom, left)
 
         for (x, y, w, h) in faces:
             roi = gray[y:y + h, x:x + w]
             if roi.size == 0:
                 continue
 
-            # Approximate location key for motion buffer (50px grid)
             face_key = (x // 50, y // 50)
             active_keys.add(face_key)
 
-            # --- Dual liveness check ---
             eye_live    = check_eye_liveness(roi)
             motion_live = check_motion_liveness(roi, face_key)
             is_live     = eye_live and motion_live
 
-            roi_proc = preprocess_face(roi)
-
-            label_text = "Unknown"
-            box_color  = (60, 60, 255)
-            text_color = (60, 60, 255)
-
             if not is_live:
-                if not eye_live:
-                    label_text = "SPOOF? (no eyes)"
-                else:
-                    label_text = "SPOOF? (static)"
-                box_color = (0, 0, 200)
-                text_color = (0, 0, 200)
+                label_text = "SPOOF? (no eyes)" if not eye_live else "SPOOF? (static)"
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 200), 2)
+                cv2.putText(frame, label_text, (x, y - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 200), 2)
             else:
-                with model_lock:
-                    cur_rec = recognizer
-                if cur_rec is not None:
-                    try:
-                        id_, conf = cur_rec.predict(roi_proc)
-                        if conf <= CONF_HIGH:
-                            name = labels.get(id_, "Unknown")
-                            label_text = f"{name} ({conf:.0f})"
-                            box_color  = (0, 200, 80)
-                            text_color = (0, 220, 80)
-                        elif conf <= CONF_MEDIUM:
-                            name = labels.get(id_, "Unknown")
-                            label_text = f"{name}? ({conf:.0f})"
-                            box_color  = (0, 200, 200)
-                            text_color = (0, 220, 220)
-                        else:
-                            label_text = f"Unknown ({conf:.0f})"
-                    except cv2.error:
-                        pass
+                live_faces.append((x, y, w, h))
+                # face_recognition format: (top, right, bottom, left)
+                fr_locations.append((y, x + w, y + h, x))
+
+        # Snapshot embeddings (avoid holding lock during recognition)
+        with embed_lock:
+            cur_embeddings = {k: list(v) for k, v in known_embeddings.items()}
+
+        recognition_results = dl_recognize(rgb_frame, fr_locations, cur_embeddings)
+
+        for (x, y, w, h), (name, dist) in zip(live_faces, recognition_results):
+            if dist <= DL_THRESHOLD_HIGH:
+                label_text = f"{name} ({dist:.2f})"
+                box_color  = (0, 200, 80)
+                text_color = (0, 220, 80)
+            elif dist <= DL_THRESHOLD_MEDIUM:
+                label_text = f"{name}? ({dist:.2f})"
+                box_color  = (0, 200, 200)
+                text_color = (0, 220, 220)
+            else:
+                label_text = f"Unknown ({dist:.2f})"
+                box_color  = (60, 60, 255)
+                text_color = (60, 60, 255)
 
             cv2.rectangle(frame, (x, y), (x + w, y + h), box_color, 2)
             cv2.putText(frame, label_text, (x, y - 10),
@@ -289,14 +324,13 @@ def gen_frames():
 # ================== CAPTURE ==================
 @app.route('/capture_frame', methods=['POST'])
 def capture_frame():
-    data      = request.json or {}
-    name      = sanitize_name(data.get('name', ''))
-    img_data  = data.get('image', '')
+    data     = request.json or {}
+    name     = sanitize_name(data.get('name', ''))
+    img_data = data.get('image', '')
 
     if not name or not img_data:
         return jsonify({'status': 'fail', 'msg': 'Name or image missing'}), 400
 
-    # Prevent path traversal
     safe_name = os.path.basename(name)
     if not safe_name or safe_name in ('.', '..'):
         return jsonify({'status': 'fail', 'msg': 'Invalid name'}), 400
@@ -317,18 +351,15 @@ def capture_frame():
 
     img  = cv2.flip(img, 1)
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # Save the full-color original — used by the DL training pipeline
     cv2.imwrite(os.path.join(originals, f"{uuid.uuid4().hex}.jpg"), img)
 
     faces = detect_faces(gray)
-    saved = 0
-
-    for (x, y, w, h) in faces:
-        roi = gray[y:y + h, x:x + w]
-        if roi.size == 0:
-            continue
-        roi_proc = preprocess_face(roi)
-        cv2.imwrite(os.path.join(person_path, f"{uuid.uuid4().hex}.jpg"), roi_proc)
-        saved += 1
+    saved = sum(
+        1 for (x, y, w, h) in faces
+        if gray[y:y + h, x:x + w].size > 0
+    )
 
     if saved == 0:
         return jsonify({
@@ -346,75 +377,66 @@ def capture_frame():
 # ================== TRAIN ==================
 @app.route('/train', methods=['POST'])
 def train():
-    x_train    = []
-    y_train    = []
-    label_ids  = {}
-    current_id = 0
-    skipped    = []
-    trained    = []
+    """
+    Extract 128-dimensional deep-learning face embeddings
+    (dlib ResNet — same model used in face_recognition library) from
+    each person's captured original images and persist to embeddings.pickle.
+    """
+    new_embeddings: dict = {}
+    skipped: list = []
+    trained: list = []
 
     for person in sorted(os.listdir(UPLOAD_FOLDER)):
-        person_path = os.path.join(UPLOAD_FOLDER, person)
-        if not os.path.isdir(person_path):
+        person_path    = os.path.join(UPLOAD_FOLDER, person)
+        originals_path = os.path.join(person_path, "originals")
+        if not os.path.isdir(originals_path):
             continue
 
-        images = [
-            f for f in os.listdir(person_path)
-            if os.path.isfile(os.path.join(person_path, f))
-            and f.lower().endswith('.jpg')
+        orig_files = [
+            f for f in os.listdir(originals_path)
+            if f.lower().endswith('.jpg')
         ]
 
-        if len(images) < TRAIN_MIN_IMAGES:
-            skipped.append({'person': person, 'count': len(images)})
-            continue
-
-        label_ids[person] = current_id
-        loaded = 0
-
-        for img_name in images:
-            img = cv2.imread(os.path.join(person_path, img_name),
-                             cv2.IMREAD_GRAYSCALE)
-            if img is None:
+        person_encs: list = []
+        for img_name in orig_files:
+            try:
+                img = face_recognition.load_image_file(
+                    os.path.join(originals_path, img_name)
+                )
+            except Exception:
                 continue
-            img = cv2.resize(img, FACE_SIZE)
-            img = clahe.apply(img)
-            # Data augmentation — multiply training samples per capture
-            for variant in augment_images(img):
-                x_train.append(variant)
-                y_train.append(current_id)
-            loaded += 1
+            # HOG detector is fast and reliable for frontal enrollment shots
+            locs = face_recognition.face_locations(img, model="hog")
+            if locs:
+                encs = face_recognition.face_encodings(img, locs)
+                person_encs.extend(encs)
 
-        if loaded < TRAIN_MIN_IMAGES:
-            del label_ids[person]
-            skipped.append({'person': person, 'count': loaded})
+        if len(person_encs) < TRAIN_MIN_IMAGES:
+            skipped.append({'person': person, 'count': len(person_encs)})
             continue
 
-        trained.append({'person': person, 'count': loaded})
-        current_id += 1
+        new_embeddings[person] = person_encs
+        trained.append({'person': person, 'count': len(person_encs)})
 
-    if not x_train:
+    if not new_embeddings:
         return jsonify({
             'status': 'fail',
-            'msg': (f'No training data found. '
-                    f'Each person needs at least {TRAIN_MIN_IMAGES} captured images.'),
+            'msg': (f'No faces found in captured images. '
+                    f'Each person needs at least {TRAIN_MIN_IMAGES} frames '
+                    f'with a clearly visible face.'),
             'skipped': skipped,
         }), 400
 
-    new_rec = cv2.face.LBPHFaceRecognizer_create(
-        radius=1, neighbors=8, grid_x=8, grid_y=8
-    )
-    new_rec.train(x_train, np.array(y_train))
-    new_rec.save("recognizer.yml")
+    with open(DL_EMBED_FILE, "wb") as f:
+        pickle.dump(new_embeddings, f)
 
-    with open("labels.pickle", "wb") as f:
-        pickle.dump(label_ids, f)
+    load_embeddings()
 
-    load_model()
+    total_vecs = sum(len(v) for v in new_embeddings.values())
     return jsonify({
         'status': 'success',
-        'msg': (f'Model trained on {len(trained)} person(s) '
-                f'using {len(x_train)} sample(s) '
-                f'(with augmentation).'),
+        'msg': (f'Deep learning model enrolled {len(trained)} person(s) — '
+                f'{total_vecs} face embedding(s) stored.'),
         'trained': trained,
         'skipped': skipped,
     })

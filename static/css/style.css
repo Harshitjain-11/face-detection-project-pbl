@@ -580,5 +580,6 @@ input[type="text"]::placeholder {
 /* ===== ACCESSIBILITY ===== */
 @media (prefers-reduced-motion: reduce) {
   .status-dot.active { animation: none; }
-  .btn, .panel, .person-block, .gallery-img, .nav-link { transition: none; }
+  .btn, .panel, .person-block, .gallery-img, .nav-link,
+  .progress-bar-fill { transition: none; }
 }

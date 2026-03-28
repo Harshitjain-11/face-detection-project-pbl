@@ -5,6 +5,66 @@
 
 ---
 
+## v3 — Deep Learning Face Recognition
+
+### Why deep learning?
+
+LBPH (Local Binary Pattern Histograms) works on raw pixel patterns.  
+It is easily confused by:
+- Changes in lighting
+- Slight pose variation
+- Multiple people in training data
+
+The **dlib ResNet face embedding model** (used by `face_recognition`) was trained on 3 million faces.  
+It produces a **128-dimensional vector** that captures high-level facial features — not pixels.  
+Result: same person from different angles/lighting → small distance; different people → large distance.
+
+### What changed
+
+#### `requirements.txt`
+
+| Change | Why |
+|--------|-----|
+| `dlib` added | Underlying C++ library for the ResNet face model |
+| `face_recognition` added | Python API for 128-d embeddings |
+
+#### `app.py`
+
+| Where | Old (LBPH) | New (Deep Learning) |
+|-------|-----------|---------------------|
+| Recognition model | `cv2.face.LBPHFaceRecognizer_create()` | `face_recognition.face_encodings()` — 128-d ResNet |
+| Model storage | `recognizer.yml` + `labels.pickle` | `embeddings.pickle` → `{name: [array128d, …]}` |
+| Globals | `recognizer`, `labels`, `model_lock`, `CONF_HIGH`, `CONF_MEDIUM` | `known_embeddings`, `embed_lock`, `DL_THRESHOLD_HIGH=0.45`, `DL_THRESHOLD_MEDIUM=0.55` |
+| Training | Pixel-histogram training on grayscale ROIs with CLAHE + augmentation | `face_recognition.face_locations()` + `face_recognition.face_encodings()` on color originals |
+| Recognition score | LBPH confidence 0–100 (lower=better) | L2 distance 0–1 (lower=better); same semantics, different scale |
+| `gen_frames()` | Per-face LBPH predict inside lock | `dl_recognize()` batches **all live faces in one call** — more efficient |
+| `capture_frame()` | Saved color original + grayscale CLAHE ROI | Saves color original only (grayscale ROIs no longer needed) |
+| `/train` route | LBPH training on grayscale ROIs | DL embedding extraction from color originals via HOG face detector |
+| `load_model()` | Loaded `recognizer.yml` + `labels.pickle` | Removed; replaced by `load_embeddings()` |
+| `augment_images()` | Manual flip/brightness augmentation for LBPH | Removed — ResNet embeddings are inherently robust to lighting/pose |
+
+#### New function: `dl_recognize()`
+
+```python
+def dl_recognize(rgb_frame, face_locations, current_embeddings) -> list:
+    """
+    Batched deep-learning recognition.
+    Returns (name, distance) per face_location.
+    distance in [0, 1]: 0 = identical, 1 = very different.
+    """
+```
+
+- Calls `face_recognition.face_encodings(rgb_frame, face_locations, num_jitters=1)` **once** for all faces in the frame
+- For each encoding, computes L2 distance to all stored embeddings with `face_recognition.face_distance()`
+- Returns the nearest neighbour; caller applies `DL_THRESHOLD_HIGH / DL_THRESHOLD_MEDIUM`
+
+#### `templates/index.html`
+
+- Updated button label: "Enrol with Deep Learning"
+- Updated hint text to mention 128-d ResNet vectors
+
+---
+
 ## v2 — Recognition Fix & Anti-Spoofing Upgrade
 
 ### File: `requirements.txt`
