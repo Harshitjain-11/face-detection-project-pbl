@@ -1,35 +1,69 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Live Face Detection</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Live Detection — FaceVault</title>
   <link rel="stylesheet" href="/static/css/style.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
 </head>
 <body>
-   <div id="particles-js"></div>
-  <div class="container">
-    <h1>Live Face Detection</h1>
-    <a href="/" style="float:right;margin-bottom:10px;">Back to Home</a>
-    <div style="margin: 30px 0;">
-      <img id="videoFeed" src="/video_feed" alt="Live Detection" width="400" style="border-radius:12px;border:2px solid #444;" />
+  <div class="app-shell">
+
+    <header class="app-header">
+      <div class="logo">
+        <span class="logo-icon">◈</span>
+        <span class="logo-text">FaceVault</span>
+      </div>
+      <nav class="app-nav">
+        <a href="/" class="nav-link">Capture</a>
+        <a href="/gallery" class="nav-link">Gallery</a>
+        <a href="/live" class="nav-link active">Live Detection</a>
+      </nav>
+    </header>
+
+    <div class="live-page">
+      <div class="panel">
+        <div class="panel-header">
+          <h2 class="panel-title">Live Face Recognition</h2>
+          <div class="status-dot active" id="liveStatus"></div>
+        </div>
+
+        <div class="live-video-wrapper">
+          <img id="videoFeed" src="/video_feed" alt="Live Detection" />
+        </div>
+
+        <div class="panel-actions" style="margin-top:1rem;">
+          <button class="btn btn-danger" onclick="stopStream()">■ Stop</button>
+          <button class="btn btn-primary" onclick="startStream()">▶ Start</button>
+        </div>
+
+        <div id="info" class="status-msg show info" style="margin-top:0.9rem;">
+          Detection running — faces are outlined in real time.
+        </div>
+      </div>
     </div>
-    <div>
-      <button onclick="stopStream()">Stop Detection</button>
-      <button onclick="startStream()">Start Detection</button>
-    </div>
-    <div id="info" style="margin-top:20px;color:#aaa;"></div>
-  </div>
+
+  </div><!-- /.app-shell -->
+
   <script>
     const videoFeed = document.getElementById('videoFeed');
+    const info      = document.getElementById('info');
+    const dot       = document.getElementById('liveStatus');
+
     function stopStream() {
       videoFeed.src = '';
-      document.getElementById('info').textContent = "Detection stopped.";
-      fetch('/shutdown', {method: 'POST'});
+      info.textContent = 'Detection stopped.';
+      info.className = 'status-msg show warn';
+      dot.classList.remove('active');
+      fetch('/shutdown', { method: 'POST' });
     }
+
     function startStream() {
       videoFeed.src = '/video_feed';
-      document.getElementById('info').textContent = "Detection running...";
+      info.textContent = 'Detection running — faces are outlined in real time.';
+      info.className = 'status-msg show info';
+      dot.classList.add('active');
     }
   </script>
 </body>
