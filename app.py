@@ -1,22 +1,29 @@
 
 try:
-    import face_recognition
+    from deepface import DeepFace
 except ImportError as _exc:
     raise ImportError(
-        "face_recognition is required. Install it with:\n"
-        "  pip install dlib face_recognition"
+        "DeepFace is required. Install it with:\n"
+        "  pip install deepface tf-keras"
     ) from _exc
 
+try:
+    from deepface.modules.verification import find_threshold as deepface_find_threshold
+except ImportError:  # pragma: no cover - fallback if DeepFace internals change
+    deepface_find_threshold = None
+
 from flask import Flask, render_template, request, Response, jsonify
-import os
-import time
-import uuid
 import base64
+import collections
+import os
 import pickle
 import re
-import threading
-import collections
 import shutil
+import threading
+import time
+import uuid
+from typing import Dict, List, Optional, Tuple
+
 import cv2
 import numpy as np
 
@@ -38,8 +45,8 @@ if face_cascade.empty():
 camera      = None
 camera_lock = threading.Lock()
 
-# Deep-learning embedding store {name: [128-d numpy array, …]}
-known_embeddings: dict = {}
+# Deep-learning embedding store {name: [ArcFace embedding vectors]}
+known_embeddings: Dict[str, List[np.ndarray]] = {}
 embed_lock = threading.Lock()
 
 STOP_STREAM = False
@@ -48,18 +55,22 @@ STOP_STREAM = False
 TRAIN_MIN_IMAGES = 2
 NAME_MAX_LEN     = 50
 
-# Deep-learning recognition thresholds
-# face_recognition uses L2 / Euclidean distance (0 = identical, 1 = very different)
-DL_THRESHOLD_HIGH   = 0.45   # ≤ 0.45 → high-confidence match
-DL_THRESHOLD_MEDIUM = 0.55   # ≤ 0.55 → possible match (shown with ?)
-# > 0.55 → Unknown
+# ArcFace / DeepFace configuration
+EMBED_MODEL_NAME      = "ArcFace"
+DETECTOR_BACKEND      = "retinaface"
+DISTANCE_METRIC       = "cosine"
+EMBED_NORMALIZATION   = "ArcFace"
+DEFAULT_DEEPFACE_THRESHOLD = (
+    # DeepFace ArcFace default (cosine) from deepface.modules.verification.find_threshold.
+    float(deepface_find_threshold(EMBED_MODEL_NAME, DISTANCE_METRIC))
+    if deepface_find_threshold is not None else 0.68
+)
+RECOGNITION_THRESHOLD = min(DEFAULT_DEEPFACE_THRESHOLD, 0.55)
+RECOGNITION_MARGIN    = 0.08   # best-vs-second gap to avoid false matches
 
 # Motion-liveness parameters
 MOTION_FRAMES    = 6     # frames kept in rolling buffer
 MOTION_THRESHOLD = 2.5   # minimum mean pixel-diff to pass as "live"
-
-# CLAHE — kept for liveness preprocessing
-clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
 # Per-face motion buffers  { face_key -> deque of small gray frames }
 _face_motion_buf: dict = {}
@@ -79,9 +90,20 @@ def load_embeddings() -> None:
             with open(DL_EMBED_FILE, "rb") as f:
                 data = pickle.load(f)
             if isinstance(data, dict):
-                known_embeddings.update(data)
-                total = sum(len(v) for v in data.values())
-                print(f"[INFO] DL embeddings loaded: {list(data.keys())} "
+                cleaned = {}
+                for person, vectors in data.items():
+                    if not isinstance(vectors, list):
+                        continue
+                    cleaned_vectors = []
+                    for vec in vectors:
+                        arr = np.asarray(vec, dtype=np.float32).reshape(-1)
+                        if arr.size > 0:
+                            cleaned_vectors.append(arr)
+                    if cleaned_vectors:
+                        cleaned[person] = cleaned_vectors
+                known_embeddings.update(cleaned)
+                total = sum(len(v) for v in cleaned.values())
+                print(f"[INFO] DL embeddings loaded: {list(cleaned.keys())} "
                       f"({total} vectors)")
             else:
                 print("[WARN] embeddings.pickle has unexpected format — ignoring")
@@ -165,47 +187,94 @@ def detect_faces(gray: np.ndarray) -> list:
 
 
 # ================== DL RECOGNITION ==================
-def dl_recognize(
-    rgb_frame: np.ndarray,
-    face_locations: list,
-    current_embeddings: dict,
-) -> list:
-    """
-    Run batched deep-learning face recognition for one video frame.
+def _normalize_vector(vec: np.ndarray) -> np.ndarray:
+    arr = np.asarray(vec, dtype=np.float32).reshape(-1)
+    norm = float(np.linalg.norm(arr))
+    if norm <= 1e-12:
+        return arr
+    return arr / norm
 
-    face_locations: list of (top, right, bottom, left) — face_recognition format.
-    current_embeddings: shallow-copied snapshot of known_embeddings.
 
-    Returns a list of (name, distance) tuples, one per location.
-    distance is in [0, 1]; lower = more similar.
-    """
-    if not face_locations:
-        return []
+def _cosine_distance(a: np.ndarray, b: np.ndarray) -> float:
+    a_n = _normalize_vector(a)
+    b_n = _normalize_vector(b)
+    if a_n.size == 0 or b_n.size == 0 or a_n.size != b_n.size:
+        return 1.0
+    sim = float(np.dot(a_n, b_n))
+    sim = max(min(sim, 1.0), -1.0)
+    return 1.0 - sim
 
-    if not current_embeddings:
-        return [("Unknown", 1.0)] * len(face_locations)
 
+def extract_arcface_embedding(
+    image_bgr: np.ndarray,
+    enforce_detection: bool,
+) -> Optional[np.ndarray]:
+    """Extract a single ArcFace embedding from an image."""
+    if image_bgr is None or image_bgr.size == 0:
+        return None
     try:
-        encodings = face_recognition.face_encodings(
-            rgb_frame, face_locations, num_jitters=1
+        reps = DeepFace.represent(
+            img_path=image_bgr,
+            model_name=EMBED_MODEL_NAME,
+            detector_backend=DETECTOR_BACKEND,
+            enforce_detection=enforce_detection,
+            align=True,
+            normalization=EMBED_NORMALIZATION,
         )
     except Exception:
-        return [("Unknown", 1.0)] * len(face_locations)
+        return None
+    if not reps:
+        return None
+    rep = reps[0]
+    if isinstance(reps, list) and len(reps) > 1:
+        # If multiple detections appear in ROI, keep the largest.
+        rep = max(
+            reps,
+            key=lambda r: int(r.get("facial_area", {}).get("w", 0))
+            * int(r.get("facial_area", {}).get("h", 0)),
+        )
+    emb = rep.get("embedding")
+    if emb is None:
+        return None
+    return _normalize_vector(np.asarray(emb, dtype=np.float32))
 
-    results = []
-    for enc in encodings:
-        best_dist = float("inf")
-        best_name = "Unknown"
-        for person_name, person_encs in current_embeddings.items():
-            if not person_encs:
-                continue
-            dists = face_recognition.face_distance(person_encs, enc)
-            min_d = float(np.min(dists))
-            if min_d < best_dist:
-                best_dist = min_d
-                best_name = person_name
-        results.append((best_name, best_dist))
-    return results
+
+def classify_arcface_embedding(
+    probe_embedding: Optional[np.ndarray],
+    current_embeddings: Dict[str, List[np.ndarray]],
+) -> Tuple[str, float]:
+    """
+    Classify one ArcFace embedding against enrolled identities.
+    Returns (label, score) where lower score is better.
+    """
+    if probe_embedding is None or not current_embeddings:
+        return ("Unknown", 1.0)
+
+    person_scores: List[Tuple[str, float]] = []
+    for person_name, person_embs in current_embeddings.items():
+        distances = [
+            _cosine_distance(e, probe_embedding)
+            for e in person_embs
+            if isinstance(e, np.ndarray) and e.size > 0
+        ]
+        if not distances:
+            continue
+        distances.sort()
+        top_k = distances[: min(3, len(distances))]
+        # Bias towards the strongest match, but still penalize inconsistent identity clusters.
+        score = 0.7 * top_k[0] + 0.3 * float(np.mean(top_k))
+        person_scores.append((person_name, score))
+
+    if not person_scores:
+        return ("Unknown", 1.0)
+
+    person_scores.sort(key=lambda x: x[1])
+    best_name, best_score = person_scores[0]
+    second_score = person_scores[1][1] if len(person_scores) > 1 else 1.0
+
+    if best_score <= RECOGNITION_THRESHOLD and (second_score - best_score) >= RECOGNITION_MARGIN:
+        return (best_name, best_score)
+    return ("Unknown", best_score)
 
 
 # ================== SANITIZE ==================
@@ -214,6 +283,18 @@ def sanitize_name(name: str) -> str:
     name = re.sub(r'\s+', ' ', name)
     name = re.sub(r'[^\w\s\-]', '', name)
     return name[:NAME_MAX_LEN]
+
+
+def get_safe_person_path(name: str) -> Optional[str]:
+    """Build a person directory path and ensure it stays under UPLOAD_FOLDER."""
+    safe_name = os.path.basename(sanitize_name(name))
+    if not safe_name or safe_name in ('.', '..'):
+        return None
+    base = os.path.abspath(UPLOAD_FOLDER)
+    person_path = os.path.abspath(os.path.join(base, safe_name))
+    if not person_path.startswith(base + os.sep):
+        return None
+    return person_path
 
 
 # ================== ROUTES ==================
@@ -250,16 +331,14 @@ def gen_frames():
         if not ret:
             continue
 
-        frame     = cv2.flip(frame, 1)
-        gray      = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        faces     = detect_faces(gray)
+        frame = cv2.flip(frame, 1)
+        gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = detect_faces(gray)
 
         active_keys: set = set()
 
-        # Separate live faces (pass liveness) for batched DL recognition
-        live_faces:   list = []  # (x, y, w, h)
-        fr_locations: list = []  # (top, right, bottom, left)
+        # Separate live faces (pass liveness) for ArcFace recognition
+        live_faces: list = []  # (x, y, w, h)
 
         for (x, y, w, h) in faces:
             roi = gray[y:y + h, x:x + w]
@@ -280,24 +359,20 @@ def gen_frames():
                             cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 200), 2)
             else:
                 live_faces.append((x, y, w, h))
-                # face_recognition format: (top, right, bottom, left)
-                fr_locations.append((y, x + w, y + h, x))
 
         # Snapshot embeddings (avoid holding lock during recognition)
         with embed_lock:
             cur_embeddings = {k: list(v) for k, v in known_embeddings.items()}
 
-        recognition_results = dl_recognize(rgb_frame, fr_locations, cur_embeddings)
+        for (x, y, w, h) in live_faces:
+            face_roi = frame[y:y + h, x:x + w]
+            emb = extract_arcface_embedding(face_roi, enforce_detection=False)
+            name, dist = classify_arcface_embedding(emb, cur_embeddings)
 
-        for (x, y, w, h), (name, dist) in zip(live_faces, recognition_results):
-            if dist <= DL_THRESHOLD_HIGH:
+            if name != "Unknown":
                 label_text = f"{name} ({dist:.2f})"
                 box_color  = (0, 200, 80)
                 text_color = (0, 220, 80)
-            elif dist <= DL_THRESHOLD_MEDIUM:
-                label_text = f"{name}? ({dist:.2f})"
-                box_color  = (0, 200, 200)
-                text_color = (0, 220, 220)
             else:
                 label_text = f"Unknown ({dist:.2f})"
                 box_color  = (60, 60, 255)
@@ -331,11 +406,10 @@ def capture_frame():
     if not name or not img_data:
         return jsonify({'status': 'fail', 'msg': 'Name or image missing'}), 400
 
-    safe_name = os.path.basename(name)
-    if not safe_name or safe_name in ('.', '..'):
+    person_path = get_safe_person_path(name)
+    if not person_path:
         return jsonify({'status': 'fail', 'msg': 'Invalid name'}), 400
-
-    person_path = os.path.join(UPLOAD_FOLDER, safe_name)
+    safe_name = os.path.basename(person_path)
     originals   = os.path.join(person_path, "originals")
     os.makedirs(originals, exist_ok=True)
 
@@ -378,9 +452,7 @@ def capture_frame():
 @app.route('/train', methods=['POST'])
 def train():
     """
-    Extract 128-dimensional deep-learning face embeddings
-    (dlib ResNet — same model used in face_recognition library) from
-    each person's captured original images and persist to embeddings.pickle.
+    Extract ArcFace embeddings from enrolled images and persist to embeddings.pickle.
     """
     new_embeddings: dict = {}
     skipped: list = []
@@ -400,16 +472,12 @@ def train():
         person_encs: list = []
         for img_name in orig_files:
             try:
-                img = face_recognition.load_image_file(
-                    os.path.join(originals_path, img_name)
-                )
+                img = cv2.imread(os.path.join(originals_path, img_name), cv2.IMREAD_COLOR)
             except Exception:
                 continue
-            # HOG detector is fast and reliable for frontal enrollment shots
-            locs = face_recognition.face_locations(img, model="hog")
-            if locs:
-                encs = face_recognition.face_encodings(img, locs)
-                person_encs.extend(encs)
+            emb = extract_arcface_embedding(img, enforce_detection=True)
+            if emb is not None:
+                person_encs.append(emb)
 
         if len(person_encs) < TRAIN_MIN_IMAGES:
             skipped.append({'person': person, 'count': len(person_encs)})
@@ -435,7 +503,7 @@ def train():
     total_vecs = sum(len(v) for v in new_embeddings.values())
     return jsonify({
         'status': 'success',
-        'msg': (f'Deep learning model enrolled {len(trained)} person(s) — '
+        'msg': (f'ArcFace model enrolled {len(trained)} person(s) — '
                 f'{total_vecs} face embedding(s) stored.'),
         'trained': trained,
         'skipped': skipped,
@@ -462,14 +530,16 @@ def gallery():
 # ================== DELETE PERSON ==================
 @app.route('/delete_person/<name>', methods=['POST'])
 def delete_person(name):
-    safe_name   = os.path.basename(sanitize_name(name))
-    person_path = os.path.join(UPLOAD_FOLDER, safe_name)
+    person_path = get_safe_person_path(name)
+    if not person_path:
+        return jsonify({'status': 'fail', 'msg': 'Invalid person name.'}), 400
+    safe_name = os.path.basename(person_path)
     if not os.path.isdir(person_path):
         return jsonify({'status': 'fail', 'msg': 'Person not found.'}), 404
     try:
         shutil.rmtree(person_path)
-    except OSError as exc:
-        return jsonify({'status': 'fail', 'msg': str(exc)}), 500
+    except OSError:
+        return jsonify({'status': 'fail', 'msg': 'Could not delete person data.'}), 500
     return jsonify({'status': 'success', 'msg': f'"{safe_name}" deleted.'})
 
 

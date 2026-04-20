@@ -5,7 +5,37 @@
 
 ---
 
+## v4 — DeepFace ArcFace + RetinaFace Upgrade
+
+### `requirements.txt`
+- Removed: `dlib`, `face_recognition`
+- Added: `deepface`, `tf-keras`
+
+### `app.py`
+- Replaced dlib embedding extraction with `DeepFace.represent(...)`
+  using:
+  - `model_name="ArcFace"`
+  - `detector_backend="retinaface"`
+  - `normalization="ArcFace"`
+- Updated `/train` to store ArcFace embeddings from enrolled images.
+- Added stricter classification logic to reduce false matches:
+  - Cosine-distance scoring with top-k averaging per identity
+  - Recognition threshold cap at `0.55`
+  - Margin check (`best vs second-best`) before accepting a name
+- Result: system now returns **Unknown** when confidence is low or identities are ambiguous, instead of forcing a person match.
+
+### Tests
+- Added `test_matching_logic.py` to validate:
+  - Unknown behavior with no enrolled identities
+  - Correct match when one identity is clearly closer
+  - Unknown behavior when best/second-best scores are too close
+
+---
+
 ## v3 — Deep Learning Face Recognition
+
+> **Legacy note:** v3 documented the earlier dlib/face_recognition pipeline (128-d vectors).
+> The current implementation is v4 (DeepFace ArcFace, 512-d vectors).
 
 ### Why deep learning?
 
@@ -166,4 +196,3 @@ pip install -r requirements.txt
 python app.py
 # Open in browser: http://127.0.0.1:5000
 ```
-
