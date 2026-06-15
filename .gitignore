@@ -4,8 +4,9 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Virtual environment
+# Virtual environments
 venv/
+venv312/
 env/
 ENV/
 
@@ -26,17 +27,17 @@ Thumbs.db
 # Environment variables
 .env
 
-# Uploads (user generated)
+# User generated data
 static/uploads/
 
-# # Model files (optional - agar large hai)
-# *.yml
-# *.pickle
+# Trained model files
+recognizer.yml
+labels.pickle
 
 # Debug / temp files
 debug_state.py
 inspect_labels.py
 
-# Database (agar use ho)
+# Database
 *.db
 *.sqlite3

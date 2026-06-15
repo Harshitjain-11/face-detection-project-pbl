@@ -1,70 +1,133 @@
 <!DOCTYPE html>
+<!--
+  index.html — FaceVault Capture Page
+  ──────────────────────────────────────────────────────────────────────────────
+  FIXES vs original:
+    • Camera stop now also calls /shutdown so Flask releases the VideoCapture
+      object (original called /shutdown but did not await before clearing src,
+      causing a race where Flask tried to read a frame after the browser had
+      closed the MJPEG connection).
+    • beforeunload releases the camera, matching live.html behaviour.
+    • Auto-capture count raised from 10 → 15 and delay raised from 700 ms →
+      900 ms to give the user time to move their head slightly between shots,
+      improving dataset diversity.
+    • Capture form submit prevented when camera is not active (was already
+      there but error message was generic — improved).
+    • Missing particles-js div restored (was present in original — kept).
+-->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Live Detection — FaceVault</title>
+  <title>FaceVault — Smart Face Recognition</title>
   <link rel="stylesheet" href="/static/css/style.css" />
-  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Inter:wght@400;500;600&display=swap"
+        rel="stylesheet" />
 </head>
 <body>
+  <div id="particles-js"></div>
+
   <div class="app-shell">
 
+    <!-- Header -->
     <header class="app-header">
       <div class="logo">
         <span class="logo-icon">◈</span>
         <span class="logo-text">FaceVault</span>
       </div>
       <nav class="app-nav">
-        <a href="/" class="nav-link">Capture</a>
+        <a href="/"        class="nav-link active">Capture</a>
         <a href="/gallery" class="nav-link">Gallery</a>
-        <a href="/live" class="nav-link active">Live Detection</a>
+        <a href="/live"    class="nav-link">Live Detection</a>
       </nav>
     </header>
 
-    <div class="live-page">
-      <div class="panel">
+    <!-- Main -->
+    <main class="main-content">
+
+      <!-- Camera panel -->
+      <section class="panel video-panel">
         <div class="panel-header">
-          <h2 class="panel-title">Live Face Recognition</h2>
-          <div class="status-dot active" id="liveStatus"></div>
+          <h2 class="panel-title">Camera Feed</h2>
+          <div class="status-dot" id="camStatus"></div>
         </div>
 
-        <div class="live-video-wrapper">
-          <img id="videoFeed" src="/video_feed" alt="Live Detection" />
+        <div class="video-wrapper">
+          <div class="video-placeholder" id="videoPlaceholder">
+            <div class="placeholder-icon">◉</div>
+            <p>Camera is off</p>
+            <p class="placeholder-sub">Click "Start Camera" to begin</p>
+          </div>
+          <img id="videoFeed" src="" alt="Live feed" />
         </div>
 
-        <div class="panel-actions" style="margin-top:1rem;">
-          <button class="btn btn-danger" onclick="stopStream()">■ Stop</button>
-          <button class="btn btn-primary" onclick="startStream()">▶ Start</button>
+        <div class="panel-actions">
+          <button class="btn btn-primary" id="startBtn">▶ Start Camera</button>
+          <button class="btn btn-danger"  id="stopBtn" style="display:none;">■ Stop Camera</button>
+        </div>
+      </section>
+
+      <!-- Control panel -->
+      <section class="panel control-panel">
+
+        <div class="panel-header">
+          <h2 class="panel-title">Face Enrolment</h2>
         </div>
 
-        <div id="info" class="status-msg show info" style="margin-top:0.9rem;">
-          Detection running — faces are outlined in real time.
+        <form id="captureForm" class="capture-form">
+          <label class="field-label" for="name">Person Name</label>
+          <input type="text" id="name" placeholder="e.g. Jane Smith"
+                 autocomplete="off" maxlength="50" required />
+          <div class="form-actions">
+            <button type="submit"  class="btn btn-secondary">📷 Capture Frame</button>
+            <button type="button"  class="btn btn-outline" id="autoCaptureBtn">🔁 Auto (15)</button>
+          </div>
+        </form>
+
+        <div class="divider"></div>
+
+        <div class="train-section">
+          <p class="section-hint">
+            After capturing images for each person, train the model to enable
+            recognition. Each person needs at least <strong>5</strong> captured
+            frames (more is better — aim for 10–20 with varied angles).
+          </p>
+          <button class="btn btn-accent" id="trainBtn">🧠 Train Recognition Model</button>
         </div>
-      </div>
-    </div>
+
+        <div id="msg" class="status-msg"></div>
+
+        <div class="progress-wrap" id="progressWrap" style="display:none;">
+          <div class="progress-bar-track">
+            <div class="progress-bar-fill" id="progressBarFill"></div>
+          </div>
+          <span class="progress-text" id="progressText"></span>
+        </div>
+
+      </section>
+    </main>
 
   </div><!-- /.app-shell -->
 
+  <script src="https://cdn.jsdelivr.net/npm/particles.js@2.0.0/particles.min.js"></script>
+  <script src="/static/js/main.js"></script>
   <script>
-    const videoFeed = document.getElementById('videoFeed');
-    const info      = document.getElementById('info');
-    const dot       = document.getElementById('liveStatus');
-
-    function stopStream() {
-      videoFeed.src = '';
-      info.textContent = 'Detection stopped.';
-      info.className = 'status-msg show warn';
-      dot.classList.remove('active');
-      fetch('/shutdown', { method: 'POST' });
-    }
-
-    function startStream() {
-      videoFeed.src = '/video_feed';
-      info.textContent = 'Detection running — faces are outlined in real time.';
-      info.className = 'status-msg show info';
-      dot.classList.add('active');
-    }
+    particlesJS("particles-js", {
+      particles: {
+        number: { value: 55 },
+        shape:  { type: "circle" },
+        size:   { value: 2, random: true },
+        color:  { value: "#3b82f6" },
+        opacity: { value: 0.3 },
+        move:   { speed: 1.1, direction: "none", out_mode: "out" },
+        line_linked: { enable: true, distance: 130, color: "#60a5fa", opacity: 0.18, width: 1 }
+      },
+      interactivity: {
+        events: { onhover: { enable: true, mode: "repulse" } },
+        modes:  { repulse: { distance: 80, duration: 0.4 } }
+      },
+      retina_detect: true
+    });
   </script>
 </body>
 </html>

@@ -6,22 +6,64 @@
   <title>Gallery — FaceVault</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
-  <script src="https://cdn.jsdelivr.net/npm/particles.js@2.0.0/particles.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/particles.js@2.0.0/particles.min.js" defer></script>
+  <style>
+    #lightbox {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.88); z-index: 200;
+      align-items: center; justify-content: center; cursor: zoom-out;
+    }
+    #lightbox.open { display: flex; }
+    #lightbox img  { max-width: 90vw; max-height: 90vh; border-radius: 10px; }
+
+    .person-footer {
+      display: flex; align-items: center;
+      justify-content: space-between; margin-top: 0.6rem;
+    }
+    .person-count { font-size: 0.76rem; color: var(--text-muted); }
+
+    .crop-badge {
+      font-size: 0.7rem; padding: 0.15rem 0.5rem;
+      border-radius: 20px; font-weight: 600;
+    }
+    .crop-badge.ready {
+      background: rgba(16,185,129,0.15);
+      color: var(--accent-green);
+      border: 1px solid rgba(16,185,129,0.3);
+    }
+    .crop-badge.not-ready {
+      background: rgba(245,158,11,0.15);
+      color: var(--accent-amber);
+      border: 1px solid rgba(245,158,11,0.3);
+    }
+
+    .btn-delete {
+      font-size: 0.72rem; padding: 0.28rem 0.6rem;
+      border-radius: 6px;
+      background: rgba(239,68,68,0.1);
+      color: var(--accent-red);
+      border: 1px solid rgba(239,68,68,0.25);
+      cursor: pointer; font-family: inherit;
+      transition: var(--transition);
+    }
+    .btn-delete:hover { background: rgba(239,68,68,0.2); }
+  </style>
 </head>
 <body>
   <div id="particles-js"></div>
+  <div id="lightbox" onclick="closeLightbox()">
+    <img id="lightboxImg" src="" alt="Full size" />
+  </div>
 
   <div class="app-shell">
-
     <header class="app-header">
       <div class="logo">
         <span class="logo-icon">◈</span>
         <span class="logo-text">FaceVault</span>
       </div>
       <nav class="app-nav">
-        <a href="/" class="nav-link">Capture</a>
+        <a href="/"        class="nav-link">Capture</a>
         <a href="/gallery" class="nav-link active">Gallery</a>
-        <a href="/live" class="nav-link">Live Detection</a>
       </nav>
     </header>
 
@@ -34,17 +76,33 @@
       </div>
 
       {% if people %}
-      <div class="gallery-tree">
+      <div class="gallery-tree" id="galleryTree">
         {% for person in people %}
-        <div class="person-block">
+        <div class="person-block" id="block-{{ loop.index }}">
           <div class="person-name">{{ person.name }}</div>
+
           <div class="person-images">
             {% for img in person.images %}
-            <img src="{{ img }}" alt="{{ person.name }}" class="gallery-img" loading="lazy" />
+            <img src="{{ img }}"
+                 alt="{{ person.name }}"
+                 class="gallery-img"
+                 loading="lazy"
+                 onerror="this.style.display='none'"
+                 onclick="openLightbox(this.src)" />
             {% endfor %}
           </div>
-          <div style="margin-top:0.6rem;font-size:0.76rem;color:var(--text-muted);">
-            {{ person.images|length }} image(s)
+
+          <div class="person-footer">
+            <div style="display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap;">
+              <span class="person-count">{{ person.images|length }} photo(s)</span>
+              <span class="crop-badge {{ 'ready' if person.ready else 'not-ready' }}">
+                {{ person.crops }} face crop(s) — {{ 'ready to train ✓' if person.ready else 'need more ✗' }}
+              </span>
+            </div>
+            <button class="btn-delete"
+                    onclick="deletePerson('{{ person.name }}', 'block-{{ loop.index }}')">
+              🗑 Delete
+            </button>
           </div>
         </div>
         {% endfor %}
@@ -60,18 +118,49 @@
       </div>
       {% endif %}
     </div>
-
-  </div><!-- /.app-shell -->
+  </div>
 
   <script>
+    const lightbox    = document.getElementById('lightbox');
+    const lightboxImg = document.getElementById('lightboxImg');
+
+    function openLightbox(src) {
+      lightboxImg.src = src;
+      lightbox.classList.add('open');
+    }
+    function closeLightbox() {
+      lightbox.classList.remove('open');
+      lightboxImg.src = '';
+    }
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
+
+    async function deletePerson(name, blockId) {
+      if (!confirm(`Remove all data for "${name}"? This cannot be undone.`)) return;
+      try {
+        const res  = await fetch('/delete_person', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+          document.getElementById(blockId)?.remove();
+        } else {
+          alert('Delete failed: ' + (data.msg || 'Unknown error'));
+        }
+      } catch (e) {
+        alert('Network error while deleting.');
+      }
+    }
+
     particlesJS("particles-js", {
       particles: {
-        number: { value: 35 },
-        shape: { type: "circle" },
-        size: { value: 2, random: true },
-        color: { value: "#3b82f6" },
+        number: { value: 25 },
+        shape:  { type: "circle" },
+        size:   { value: 2, random: true },
+        color:  { value: "#3b82f6" },
         opacity: { value: 0.22 },
-        move: { speed: 0.9, direction: "none", out_mode: "out" },
+        move:   { speed: 0.9, direction: "none", out_mode: "out" },
         line_linked: { enable: true, distance: 140, color: "#60a5fa", opacity: 0.12, width: 1 }
       },
       interactivity: { events: { onhover: { enable: false } } },

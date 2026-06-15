@@ -1,3 +1,14 @@
-flask
-pillow
-opencv-python
+# FaceVault — Deep Learning Edition
+# Python 3.11 required (dlib does not support 3.14)
+#
+# Install order matters on Windows:
+#   pip install cmake
+#   pip install dlib
+#   pip install face_recognition
+#   pip install flask numpy pillow opencv-contrib-python
+
+flask>=3.0
+numpy>=1.26,<2.0
+pillow>=10.0
+opencv-contrib-python>=4.9
+face_recognition

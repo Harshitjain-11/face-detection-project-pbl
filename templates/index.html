@@ -3,32 +3,28 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>FaceVault — Smart Face Recognition</title>
+  <title>FaceVault — Face Recognition</title>
   <link rel="stylesheet" href="/static/css/style.css" />
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
 </head>
 <body>
   <div id="particles-js"></div>
-
   <div class="app-shell">
 
-    <!-- ── Header ── -->
     <header class="app-header">
       <div class="logo">
         <span class="logo-icon">◈</span>
         <span class="logo-text">FaceVault</span>
       </div>
       <nav class="app-nav">
-        <a href="/" class="nav-link active">Capture</a>
+        <a href="/"        class="nav-link active">Capture</a>
         <a href="/gallery" class="nav-link">Gallery</a>
-        <a href="/live" class="nav-link">Live Detection</a>
       </nav>
     </header>
 
-    <!-- ── Main ── -->
     <main class="main-content">
 
-      <!-- Camera panel (left / top on mobile) -->
+      <!-- Camera panel -->
       <section class="panel video-panel">
         <div class="panel-header">
           <h2 class="panel-title">Camera Feed</h2>
@@ -46,53 +42,48 @@
 
         <div class="panel-actions">
           <button class="btn btn-primary" id="startBtn">▶ Start Camera</button>
-          <button class="btn btn-danger" id="stopBtn" style="display:none;">■ Stop Camera</button>
+          <button class="btn btn-danger"  id="stopBtn" style="display:none;">■ Stop Camera</button>
         </div>
       </section>
 
-      <!-- Control panel (right / bottom on mobile) -->
+      <!-- Control panel -->
       <section class="panel control-panel">
-
-        <!-- Enrolment form -->
         <div class="panel-header">
           <h2 class="panel-title">Face Enrolment</h2>
         </div>
 
         <form id="captureForm" class="capture-form">
           <label class="field-label" for="name">Person Name</label>
-          <input type="text" id="name" placeholder="e.g. Jane Smith" autocomplete="off" maxlength="50" required />
+          <input type="text" id="name" placeholder="e.g. Harshit" autocomplete="off" maxlength="50" required />
           <div class="form-actions">
-            <button type="submit" class="btn btn-secondary">📷 Capture Frame</button>
-            <button type="button" class="btn btn-outline" id="autoCaptureBtn">🔁 Auto (10)</button>
+            <button type="submit"  class="btn btn-secondary">📷 Capture Frame</button>
+            <button type="button"  class="btn btn-outline" id="autoCaptureBtn">🔁 Auto (20)</button>
           </div>
         </form>
 
         <div class="divider"></div>
 
-        <!-- Train model -->
         <div class="train-section">
           <p class="section-hint">
-            After capturing images for each person, train the model to enable recognition.
-            Each person needs at least 2 captured frames.
+            Capture <strong>15–20 frames</strong> per person with varied angles and lighting.
+            Face the camera directly — side profiles are often missed by the detector.
+            Then click Train.
           </p>
           <button class="btn btn-accent" id="trainBtn">🧠 Train Recognition Model</button>
         </div>
 
-        <!-- Status message -->
         <div id="msg" class="status-msg"></div>
 
-        <!-- Progress bar (auto-capture) -->
         <div class="progress-wrap" id="progressWrap" style="display:none;">
           <div class="progress-bar-track">
             <div class="progress-bar-fill" id="progressBarFill"></div>
           </div>
           <span class="progress-text" id="progressText"></span>
         </div>
-
       </section>
     </main>
 
-  </div><!-- /.app-shell -->
+  </div>
 
   <script src="https://cdn.jsdelivr.net/npm/particles.js@2.0.0/particles.min.js"></script>
   <script src="/static/js/main.js"></script>
@@ -100,16 +91,16 @@
     particlesJS("particles-js", {
       particles: {
         number: { value: 55 },
-        shape: { type: "circle" },
-        size: { value: 2, random: true },
-        color: { value: "#3b82f6" },
+        shape:  { type: "circle" },
+        size:   { value: 2, random: true },
+        color:  { value: "#3b82f6" },
         opacity: { value: 0.3 },
-        move: { speed: 1.1, direction: "none", out_mode: "out" },
+        move:   { speed: 1.1, direction: "none", out_mode: "out" },
         line_linked: { enable: true, distance: 130, color: "#60a5fa", opacity: 0.18, width: 1 }
       },
       interactivity: {
         events: { onhover: { enable: true, mode: "repulse" } },
-        modes: { repulse: { distance: 80, duration: 0.4 } }
+        modes:  { repulse: { distance: 80, duration: 0.4 } }
       },
       retina_detect: true
     });
