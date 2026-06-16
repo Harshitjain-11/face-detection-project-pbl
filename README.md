@@ -317,24 +317,6 @@ This transition will move the camera access layer to the client side, allowing t
 
 ---
 
-## 🖼️ Screenshots Section
-
-> *Note: Placeholders for application screenshots. Add your local interface images here before sharing.*
-
-### 🖥️ Home Page
-![Home Page Placeholder](https://via.placeholder.com/800x450.png?text=FaceVault+Home+Dashboard+View)
-
-### 👤 Face Enrollment
-![Enrollment Placeholder](https://via.placeholder.com/800x450.png?text=Face+Enrollment+and+Dataset+Capture)
-
-### 🟢 Live Recognition
-![Live Recognition Placeholder](https://via.placeholder.com/800x450.png?text=Real-time+Visual+Identification+Feed)
-
-### 📂 Gallery Dashboard
-![Gallery Placeholder](https://via.placeholder.com/800x450.png?text=Registered+User+Profiles+Gallery)
-
----
-
 ## 📊 Results & Observations
 
 * **Processing Latency:** Average LBPH inference takes **`8.5 ms`** per frame on a standard dual-core CPU.
